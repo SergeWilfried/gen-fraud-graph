@@ -16,7 +16,7 @@ from tqdm import tqdm
 from gen_fraud_graph.config import Config
 from gen_fraud_graph.embeddings import EmbeddingGenerator
 from gen_fraud_graph.exporters import get_headers
-from gen_fraud_graph.typologies import FraudRingGenerator
+from gen_fraud_graph.typologies import FraudRingGenerator, StructuringGenerator 
 
 # ---------------------------------------------------------------------------
 # Normal transaction descriptions
@@ -327,18 +327,21 @@ class FraudGraphGenerator:
             for f in tqdm(futures, total=len(futures), desc="Transaction batches"):
                 f.result()
 
+
+
     def _generate_fraud(self) -> None:
         cfg = self.cfg
-        print("\n[Phase 3] Generating fraud rings...")
+        print("\n[Phase 3] Generating fraud patterns...")
 
         embedder = EmbeddingGenerator(cfg.embedding_provider, dim=cfg.embedding_dim)
-        # cfg.num_fraud_rings is resolved to int in Config.__post_init__
+
+        # --- cyclic money-laundering rings ---
         assert cfg.num_fraud_rings is not None
-        fraud_gen = FraudRingGenerator(
+        ring_gen = FraudRingGenerator(
             num_rings=cfg.num_fraud_rings,
             depth_range=cfg.fraud_ring_depth_range,
         )
-        n_tx, _ = fraud_gen.generate(
+        n_ring_tx, next_tx_id = ring_gen.generate(
             max_account_id=cfg.num_accounts,
             start_tx_id=cfg.num_transactions,
             embedder=embedder,
@@ -346,4 +349,24 @@ class FraudGraphGenerator:
             fmt=cfg.output_format,
             compress=cfg.compress,
         )
-        print(f"  Injected {n_tx:,} fraud transactions across {cfg.num_fraud_rings:,} rings")
+        print(f"  Injected {n_ring_tx:,} ring transactions across {cfg.num_fraud_rings:,} rings")
+
+        # --- structuring / smurfing patterns ---
+        assert cfg.num_structuring_patterns is not None
+        struct_gen = StructuringGenerator(
+            num_patterns=cfg.num_structuring_patterns,
+            smurfs_range=cfg.structuring_smurfs_range,
+            amount_range=cfg.structuring_amount_range,
+        )
+        n_struct_tx, _ = struct_gen.generate(
+            max_account_id=cfg.num_accounts,
+            start_tx_id=next_tx_id,
+            embedder=embedder,
+            output_dir=cfg.output_dir,
+            fmt=cfg.output_format,
+            compress=cfg.compress,
+        )
+        print(
+            f"  Injected {n_struct_tx:,} structuring transactions "
+            f"across {cfg.num_structuring_patterns:,} patterns"
+        )

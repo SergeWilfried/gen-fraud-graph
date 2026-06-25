@@ -16,7 +16,7 @@ from gen_fraud_graph.config import Config
 from gen_fraud_graph.embeddings import EmbeddingGenerator
 from gen_fraud_graph.exporters import get_headers, write_output
 from gen_fraud_graph.generator import FraudGraphGenerator
-from gen_fraud_graph.typologies import FraudRingGenerator
+from gen_fraud_graph.typologies import FraudRingGenerator, StructuringGenerator 
 from gen_fraud_graph.verify import verify_fraud_patterns
 
 # ---------------------------------------------------------------------------
@@ -221,3 +221,256 @@ class TestVerify:
 
         cases_path = os.path.join(small_config.output_dir, "fraud", "fraud_cases.csv")
         assert verify_fraud_patterns(cases_path, small_config.output_dir)
+
+# ---------------------------------------------------------------------------
+# Structuring typology test
+# ---------------------------------------------------------------------------
+
+class TestStructuringGenerator:
+    def test_generate_creates_files(self, tmp_dir):
+        """StructuringGenerator must write transactions_fraud.csv and fraud_cases.csv."""
+        emb = EmbeddingGenerator("fake", dim=32)
+        gen = StructuringGenerator(num_patterns=5, smurfs_range=(3,3))
+
+        n_tx, next_id = gen.generate(
+            max_account_id = 1000,
+            start_tx_id = 0,
+            embedder = emb,
+            output_dir = tmp_dir,
+            fmt = "csv",
+        )
+        assert n_tx > 0 
+        assert os.path.exists(os.path.join(tmp_dir, "fraud", "transactions_fraud.csv"))
+        assert os.path.exists(os.path.join(tmp_dir, "fraud", "fraud_cases.csv"))
+
+    def test_pattern_type_is_structuring(self, tmp_dir):
+        """fraud_cases.csv rows produced by StructuringGenerator must have pattern_type='structuring'."""
+        emb = EmbeddingGenerator("fake",dim=32)
+        gen = StructuringGenerator(num_patterns=4, smurfs_range=(3,3))
+        gen.generate(
+            max_account_id = 200,
+            start_tx_id = 0,
+            embedder = emb,
+            output_dir=tmp_dir,
+        )
+        with open(os.path.join(tmp_dir, "fraud", "fraud_cases.csv")) as fh:
+            reader = csv.DictReader(fh)
+            rows = list(reader)
+        assert len(rows) == 4
+        assert all(r["pattern_type"] == "structuring" for r in rows)
+    
+     
+
+
+    def test_transaction_count_matches_smurfs(self, tmp_dir):
+        """With fixed smurf count each pattern must emit exactly that many transactions."""
+        emb = EmbeddingGenerator("fake", dim=32)
+        fixed_smurfs = 5
+        num_patterns = 3
+        gen = StructuringGenerator(
+            num_patterns=num_patterns,
+            smurfs_range=(fixed_smurfs, fixed_smurfs),
+        )
+        n_tx, _ = gen.generate(
+            max_account_id=500,
+            start_tx_id=0,
+            embedder=emb,
+            output_dir=tmp_dir,
+        )
+        assert n_tx == num_patterns * fixed_smurfs
+
+    def test_amounts_are_sub_threshold(self, tmp_dir):
+        """All structuring amounts must stay below the $10 000 CTR threshold."""
+        emb = EmbeddingGenerator("fake", dim=32)
+        gen = StructuringGenerator(num_patterns=10, smurfs_range=(3, 7))
+        gen.generate(
+            max_account_id=1000,
+            start_tx_id=0,
+            embedder=emb,
+            output_dir=tmp_dir,
+        )
+        with open(os.path.join(tmp_dir, "fraud", "transactions_fraud.csv")) as fh:
+            reader = csv.DictReader(fh)
+            amounts = [float(r["amount"]) for r in reader]
+        assert all(a < 10_000.00 for a in amounts), "Found amount >= CTR threshold"
+
+    def test_all_transactions_fan_into_coordinator(self, tmp_dir):
+        """Every transaction in a structuring pattern must target the coordinator (fan-in star)."""
+        emb = EmbeddingGenerator("fake", dim=32)
+        fixed_smurfs = 4
+        gen = StructuringGenerator(num_patterns=2, smurfs_range=(fixed_smurfs, fixed_smurfs))
+        gen.generate(
+            max_account_id=200,
+            start_tx_id=0,
+            embedder=emb,
+            output_dir=tmp_dir,
+        )
+        # Build a map of coordinator → smurf accounts from fraud_cases.csv
+        coordinators: dict[str, set[str]] = {}
+        with open(os.path.join(tmp_dir, "fraud", "fraud_cases.csv")) as fh:
+            for row in csv.DictReader(fh):
+                if row["pattern_type"] != "structuring":
+                    continue
+                coord = row["start_acc_id"]
+                involved = set(row["involved_accounts"].split("|"))
+                coordinators[coord] = involved
+
+        with open(os.path.join(tmp_dir, "fraud", "transactions_fraud.csv")) as fh:
+            for row in csv.DictReader(fh):
+                dst = row["dst_id"]
+                if dst in coordinators:
+                    src = row["src_id"]
+                    # source must be a known smurf for this coordinator
+                    assert src in coordinators[dst], (
+                        f"src {src} not a registered smurf of coordinator {dst}"
+                    )
+
+    def test_tx_ids_do_not_collide_with_start(self, tmp_dir):
+        """Transaction IDs must begin at start_tx_id and never reuse prior IDs."""
+        emb = EmbeddingGenerator("fake", dim=32)
+        start = 9_999
+        gen = StructuringGenerator(num_patterns=3, smurfs_range=(3, 3))
+        _, next_id = gen.generate(
+            max_account_id=500,
+            start_tx_id=start,
+            embedder=emb,
+            output_dir=tmp_dir,
+        )
+        with open(os.path.join(tmp_dir, "fraud", "transactions_fraud.csv")) as fh:
+            ids = [int(r["tx_id"].lstrip("tx_")) for r in csv.DictReader(fh)]
+        assert min(ids) == start
+        assert next_id == start + len(ids)
+
+    def test_neptune_format(self, tmp_dir):
+        """Neptune format must not include an embedding column."""
+        emb = EmbeddingGenerator("fake", dim=32)
+        gen = StructuringGenerator(num_patterns=2, smurfs_range=(3, 3))
+        n_tx, _ = gen.generate(
+            max_account_id=200,
+            start_tx_id=0,
+            embedder=emb,
+            output_dir=tmp_dir,
+            fmt="neptune",
+        )
+        assert n_tx > 0
+        with open(os.path.join(tmp_dir, "fraud", "transactions_fraud.csv")) as fh:
+            headers = next(csv.reader(fh))
+        assert "embedding" not in headers
+
+    def test_tiny_account_pool(self, tmp_dir):
+        """Generator must not crash when max_account_id is smaller than smurfs_range[1] + 1."""
+        emb = EmbeddingGenerator("fake", dim=32)
+        gen = StructuringGenerator(num_patterns=5, smurfs_range=(3, 10))
+        n_tx, _ = gen.generate(
+            max_account_id=5,   # smaller than max smurfs + 1
+            start_tx_id=0,
+            embedder=emb,
+            output_dir=tmp_dir,
+        )
+        assert n_tx > 0
+    def test_transaction_count_matches_smurfs(self, tmp_dir):
+        """With fixed smurf count each pattern must emit exactly that many transactions."""
+        emb = EmbeddingGenerator("fake", dim=32)
+        fixed_smurfs = 5
+        num_patterns = 3
+        gen = StructuringGenerator(
+            num_patterns=num_patterns,
+            smurfs_range=(fixed_smurfs, fixed_smurfs),
+        )
+        n_tx, _ = gen.generate(
+            max_account_id=500,
+            start_tx_id=0,
+            embedder=emb,
+            output_dir=tmp_dir,
+        )
+        assert n_tx == num_patterns * fixed_smurfs
+
+    def test_amounts_are_sub_threshold(self, tmp_dir):
+        """All structuring amounts must stay below the $10 000 CTR threshold."""
+        emb = EmbeddingGenerator("fake", dim=32)
+        gen = StructuringGenerator(num_patterns=10, smurfs_range=(3, 7))
+        gen.generate(
+            max_account_id=1000,
+            start_tx_id=0,
+            embedder=emb,
+            output_dir=tmp_dir,
+        )
+        with open(os.path.join(tmp_dir, "fraud", "transactions_fraud.csv")) as fh:
+            reader = csv.DictReader(fh)
+            amounts = [float(r["amount"]) for r in reader]
+        assert all(a < 10_000.00 for a in amounts), "Found amount >= CTR threshold"
+
+    def test_all_transactions_fan_into_coordinator(self, tmp_dir):
+        """Every transaction in a structuring pattern must target the coordinator (fan-in star)."""
+        emb = EmbeddingGenerator("fake", dim=32)
+        fixed_smurfs = 4
+        gen = StructuringGenerator(num_patterns=2, smurfs_range=(fixed_smurfs, fixed_smurfs))
+        gen.generate(
+            max_account_id=200,
+            start_tx_id=0,
+            embedder=emb,
+            output_dir=tmp_dir,
+        )
+        # Build a map of coordinator → smurf accounts from fraud_cases.csv
+        coordinators: dict[str, set[str]] = {}
+        with open(os.path.join(tmp_dir, "fraud", "fraud_cases.csv")) as fh:
+            for row in csv.DictReader(fh):
+                if row["pattern_type"] != "structuring":
+                    continue
+                coord = row["start_acc_id"]
+                involved = set(row["involved_accounts"].split("|"))
+                coordinators[coord] = involved
+
+        with open(os.path.join(tmp_dir, "fraud", "transactions_fraud.csv")) as fh:
+            for row in csv.DictReader(fh):
+                dst = row["dst_id"]
+                if dst in coordinators:
+                    src = row["src_id"]
+                    # source must be a known smurf for this coordinator
+                    assert src in coordinators[dst], (
+                        f"src {src} not a registered smurf of coordinator {dst}"
+                    )
+
+    def test_tx_ids_do_not_collide_with_start(self, tmp_dir):
+        """Transaction IDs must begin at start_tx_id and never reuse prior IDs."""
+        emb = EmbeddingGenerator("fake", dim=32)
+        start = 9_999
+        gen = StructuringGenerator(num_patterns=3, smurfs_range=(3, 3))
+        _, next_id = gen.generate(
+            max_account_id=500,
+            start_tx_id=start,
+            embedder=emb,
+            output_dir=tmp_dir,
+        )
+        with open(os.path.join(tmp_dir, "fraud", "transactions_fraud.csv")) as fh:
+            ids = [int(r["tx_id"].lstrip("tx_")) for r in csv.DictReader(fh)]
+        assert min(ids) == start
+        assert next_id == start + len(ids)
+
+    def test_neptune_format(self, tmp_dir):
+        """Neptune format must not include an embedding column."""
+        emb = EmbeddingGenerator("fake", dim=32)
+        gen = StructuringGenerator(num_patterns=2, smurfs_range=(3, 3))
+        n_tx, _ = gen.generate(
+            max_account_id=200,
+            start_tx_id=0,
+            embedder=emb,
+            output_dir=tmp_dir,
+            fmt="neptune",
+        )
+        assert n_tx > 0
+        with open(os.path.join(tmp_dir, "fraud", "transactions_fraud.csv")) as fh:
+            headers = next(csv.reader(fh))
+        assert "embedding" not in headers
+
+    def test_tiny_account_pool(self, tmp_dir):
+        """Generator must not crash when max_account_id is smaller than smurfs_range[1] + 1."""
+        emb = EmbeddingGenerator("fake", dim=32)
+        gen = StructuringGenerator(num_patterns=5, smurfs_range=(3, 10))
+        n_tx, _ = gen.generate(
+            max_account_id=5,   # smaller than max smurfs + 1
+            start_tx_id=0,
+            embedder=emb,
+            output_dir=tmp_dir,
+        )
+        assert n_tx > 0
