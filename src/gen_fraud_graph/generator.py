@@ -16,7 +16,7 @@ from tqdm import tqdm
 from gen_fraud_graph.config import Config
 from gen_fraud_graph.embeddings import EmbeddingGenerator
 from gen_fraud_graph.exporters import get_headers
-from gen_fraud_graph.typologies import FraudRingGenerator, StructuringGenerator 
+from gen_fraud_graph.typologies import FraudRingGenerator, StructuringGenerator
 
 # ---------------------------------------------------------------------------
 # Normal transaction descriptions
@@ -196,8 +196,7 @@ def _generate_transactions_chunk(
             writer.writerows(final_rows)
             if (i + chunk_count) % 50_000 == 0:
                 print(
-                    f"  Worker {worker_id} Batch {batch_id}: "
-                    f"{i + chunk_count} transactions written"
+                    f"  Worker {worker_id} Batch {batch_id}: {i + chunk_count} transactions written"
                 )
 
     return f"Worker {worker_id} Batch {batch_id}: Generated {count} transactions"
@@ -326,8 +325,6 @@ class FraudGraphGenerator:
                     )
             for f in tqdm(futures, total=len(futures), desc="Transaction batches"):
                 f.result()
-
-
 
     def _generate_fraud(self) -> None:
         cfg = self.cfg
