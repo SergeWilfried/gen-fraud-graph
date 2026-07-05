@@ -28,7 +28,7 @@ SUSPICIOUS_DESCRIPTIONS: list[str] = [
     "high-value cross-border wire",
 ]
 
-# Description specififc to structuring/smurfing patterns.
+# Description specific to structuring/smurfing patterns.
 STRUCTURING_DESCRIPTIONS: list[str] = [
     "cash deposit below reporting threshold",
     "multiple small deposits same day",

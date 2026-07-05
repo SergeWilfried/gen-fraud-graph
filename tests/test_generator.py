@@ -15,15 +15,14 @@ import pytest
 from gen_fraud_graph.config import Config
 from gen_fraud_graph.embeddings import EmbeddingGenerator
 from gen_fraud_graph.exporters import get_headers, write_output
-from gen_fraud_graph.typologies import FraudRingGenerator, StructuringGenerator
-from gen_fraud_graph.verify import verify_fraud_patterns
 from gen_fraud_graph.generator import (
     FraudGraphGenerator,
     _generate_accounts_chunk,
     _generate_transactions_chunk,
     _split_workload,
 )
-
+from gen_fraud_graph.typologies import FraudRingGenerator, StructuringGenerator
+from gen_fraud_graph.verify import verify_fraud_patterns
 
 # ---------------------------------------------------------------------------
 # Fixtures
