@@ -23,12 +23,12 @@
 The generator creates three types of data:
 - **Account nodes** — synthetic customer accounts with balance, risk score, and optional embedding vectors
 - **Transaction edges** — normal financial transactions between accounts
-- **Fraud rings** — cyclic money-laundering patterns with suspicious transaction descriptions
+- **Fraud typologies** — cyclic money-laundering rings, structuring/smurfing, mobile money agent-commission fraud, trade-based money laundering (TBML), hawala/informal value transfer networks, SIM-swap account takeover, and overdraft/micro-loan mule chains
 
 ### Key Features
 
 - **Massive scale** — Generate from 1K to 100M+ accounts with configurable scale factor
-- **Fraud pattern injection** — Cyclic money-laundering rings with configurable depth (4–7 hops)
+- **Fraud pattern injection** — Cyclic money-laundering rings (4–7 hops), structuring, mobile money splits, TBML layering chains, hawala corridors, SIM-swap takeover cascades, and micro-loan mule chains
 - **Parallel generation** — Multi-process workers for fast generation on high-core machines
 - **Vector embeddings** — Three providers: `fake` (random, fast), `local` (SentenceTransformers), `openai` (API)
 - **Multiple formats** — Generic CSV or AWS Neptune bulk-load format
@@ -104,6 +104,10 @@ gen-fraud-graph --scale 1.0 --workers 24 --skip-accounts --output ./data
 | `--batches` | `1` | Number of file chunks per worker. |
 | `--format` | `csv` | Output format: `csv` (generic) or `neptune` (AWS Neptune bulk-load). |
 | `--fraud-rings` | auto | Number of fraud rings. Default: auto-scaled from `--scale`. |
+| `--trade-based-ml-patterns` | auto | Number of TBML patterns. Default: auto-scaled from `--scale`. |
+| `--hawala-patterns` | auto | Number of hawala network patterns. Default: auto-scaled from `--scale`. |
+| `--sim-swap-patterns` | auto | Number of SIM-swap account takeover patterns. Default: auto-scaled from `--scale`. |
+| `--overdraft-mule-patterns` | auto | Number of overdraft/micro-loan mule chain patterns. Default: auto-scaled from `--scale`. |
 | `--compress` | off | ZIP-compress output CSV files. |
 | `--skip-accounts` | off | Skip account generation (useful when resuming). |
 
@@ -178,11 +182,20 @@ data/
 
 | Column | Type | Description |
 |:---|:---|:---|
-| `pattern_id` | string | Pattern identifier (`pat_0`, `pat_1`, ...) |
-| `start_acc_id` | string | First account in the ring |
-| `pattern_type` | string | Always `"cycle"` |
-| `depth` | int | Number of hops in the ring (4–7) |
-| `involved_accounts` | string | Pipe-separated list of accounts |
+| `pattern_id` | string | Pattern identifier (`pat_0`, `struct_0`, `mm_0`, `tbml_0`, `hawala_0`, `simswap_0`, ...) |
+| `start_acc_id` | string | Anchor account for the pattern (meaning varies by `pattern_type`) |
+| `pattern_type` | string | One of `cycle`, `structuring`, `mobile_money_split`, `trade_based_ml`, `hawala_network`, `sim_swap_takeover`, `overdraft_mule_chain` |
+| `depth` | int | Meaning varies by `pattern_type` — see below |
+| `involved_accounts` | string | Pipe-separated list of accounts; role encoded by position — see below |
+
+`involved_accounts` positional convention and `depth` meaning, by `pattern_type`:
+- `cycle`: ordered ring `acc_0\|acc_1\|...\|acc_{depth-1}` (edges wrap: last -> first). `depth` = ring length (4–7 hops).
+- `structuring`: `coordinator\|smurf_0\|...\|smurf_{depth-1}` (`accounts[0]` = coordinator). `depth` = number of smurfs.
+- `mobile_money_split`: `agent\|customer` (`accounts[0]` = agent). `depth` = number of split transactions.
+- `trade_based_ml`: `exporter\|shell_importer\|intermediary_0\|...\|intermediary_{depth-1}\|beneficiary`. `depth` = number of layering intermediaries.
+- `hawala_network`: `sender\|hawaladar_A\|hawaladar_B\|beneficiary` (fixed length 4). `depth` = number of edges emitted (3, or 4 if the periodic reverse settlement fired).
+- `sim_swap_takeover`: `victim\|cashout_agent_0\|...\|cashout_agent_{depth-1}` (`accounts[0]` = victim). `depth` = number of cash-out agents.
+- `overdraft_mule_chain`: `collector\|mule_0\|...\|mule_{depth-1}\|agent` (`accounts[0]` = collector). `depth` = number of mule accounts. The final collector -> agent edge amount equals the sum of all mule loan amounts.
 
 ---
 

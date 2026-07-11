@@ -16,23 +16,31 @@ from tqdm import tqdm
 from gen_fraud_graph.config import Config
 from gen_fraud_graph.embeddings import EmbeddingGenerator
 from gen_fraud_graph.exporters import get_headers
-from gen_fraud_graph.typologies import FraudRingGenerator, StructuringGenerator
+from gen_fraud_graph.typologies import (
+    FraudRingGenerator,
+    HawalaNetworkGenerator,
+    MobileMoneyFraudGenerator,
+    OverdraftMuleGenerator,
+    SIMSwapFraudGenerator,
+    StructuringGenerator,
+    TradeBasedMLGenerator,
+)
 
 # ---------------------------------------------------------------------------
 # Normal transaction descriptions
 # ---------------------------------------------------------------------------
 
 NORMAL_DESCRIPTIONS: list[str] = [
-    "grocery store purchase",
-    "salary deposit",
-    "utility bill payment",
-    "online subscription",
-    "restaurant payment",
-    "atm withdrawal",
-    "peer to peer transfer",
-    "insurance premium",
-    "mortgage payment",
-    "investment deposit",
+    "achat supermarché",
+    "dépôt salaire",
+    "paiement facture Senelec/CIE",
+    "abonnement en ligne",
+    "paiement restaurant",
+    "retrait GAB",
+    "transfert mobile money",
+    "prime assurance",
+    "paiement loyer",
+    "dépôt investissement",
 ]
 
 
@@ -113,7 +121,7 @@ def _generate_accounts_chunk(
                 row: list = [
                     aid,
                     name,
-                    round(random.uniform(100, 100_000), 2),
+                    round(random.uniform(50_000, 50_000_000), 2),
                     round(random.uniform(0, 1), 4),
                     "2023-01-01",
                 ]
@@ -195,7 +203,7 @@ def _generate_transactions_chunk(
                     f"tx_{tx_uid}",
                     src,
                     dst,
-                    round(random.uniform(10, 500), 2),
+                    round(random.uniform(5_000, 500_000), 2),
                     "2024-01-01T10:00:00",
                     desc,
                 ]
@@ -375,7 +383,7 @@ class FraudGraphGenerator:
             smurfs_range=cfg.structuring_smurfs_range,
             amount_range=cfg.structuring_amount_range,
         )
-        n_struct_tx, _ = struct_gen.generate(
+        n_struct_tx, next_tx_id_2 = struct_gen.generate(
             max_account_id=cfg.num_accounts,
             start_tx_id=next_tx_id,
             embedder=embedder,
@@ -386,4 +394,103 @@ class FraudGraphGenerator:
         print(
             f"  Injected {n_struct_tx:,} structuring transactions "
             f"across {cfg.num_structuring_patterns:,} patterns"
+        )
+
+        # --- mobile money fraud patterns ---
+        assert cfg.num_mobile_money_patterns is not None
+        mm_gen = MobileMoneyFraudGenerator(
+            num_patterns=cfg.num_mobile_money_patterns,
+            amount_range=cfg.mobile_money_amount_range,
+        )
+        n_mm_tx, next_tx_id_3 = mm_gen.generate(
+            max_account_id=cfg.num_accounts,
+            start_tx_id=next_tx_id_2,
+            embedder=embedder,
+            output_dir=cfg.output_dir,
+            fmt=cfg.output_format,
+            compress=cfg.compress,
+        )
+        print(
+            f"  Injected {n_mm_tx:,} mobile money transactions "
+            f"across {cfg.num_mobile_money_patterns:,} patterns"
+        )
+
+        # --- trade-based money laundering (TBML) patterns ---
+        assert cfg.num_trade_based_ml_patterns is not None
+        tbml_gen = TradeBasedMLGenerator(
+            num_patterns=cfg.num_trade_based_ml_patterns,
+            intermediaries_range=cfg.trade_based_ml_intermediaries_range,
+            amount_range=cfg.trade_based_ml_amount_range,
+        )
+        n_tbml_tx, next_tx_id_4 = tbml_gen.generate(
+            max_account_id=cfg.num_accounts,
+            start_tx_id=next_tx_id_3,
+            embedder=embedder,
+            output_dir=cfg.output_dir,
+            fmt=cfg.output_format,
+            compress=cfg.compress,
+        )
+        print(
+            f"  Injected {n_tbml_tx:,} TBML transactions "
+            f"across {cfg.num_trade_based_ml_patterns:,} patterns"
+        )
+
+        # --- hawala / informal value transfer network patterns ---
+        assert cfg.num_hawala_patterns is not None
+        hawala_gen = HawalaNetworkGenerator(
+            num_patterns=cfg.num_hawala_patterns,
+            settlement_amount_range=cfg.hawala_settlement_amount_range,
+            transfer_amount_range=cfg.hawala_transfer_amount_range,
+        )
+        n_hawala_tx, next_tx_id_5 = hawala_gen.generate(
+            max_account_id=cfg.num_accounts,
+            start_tx_id=next_tx_id_4,
+            embedder=embedder,
+            output_dir=cfg.output_dir,
+            fmt=cfg.output_format,
+            compress=cfg.compress,
+        )
+        print(
+            f"  Injected {n_hawala_tx:,} hawala transactions "
+            f"across {cfg.num_hawala_patterns:,} patterns"
+        )
+
+        # --- SIM-swap account takeover patterns ---
+        assert cfg.num_sim_swap_patterns is not None
+        simswap_gen = SIMSwapFraudGenerator(
+            num_patterns=cfg.num_sim_swap_patterns,
+            num_agents_range=cfg.sim_swap_agents_range,
+            amount_range=cfg.sim_swap_amount_range,
+        )
+        n_simswap_tx, next_tx_id_6 = simswap_gen.generate(
+            max_account_id=cfg.num_accounts,
+            start_tx_id=next_tx_id_5,
+            embedder=embedder,
+            output_dir=cfg.output_dir,
+            fmt=cfg.output_format,
+            compress=cfg.compress,
+        )
+        print(
+            f"  Injected {n_simswap_tx:,} SIM-swap transactions "
+            f"across {cfg.num_sim_swap_patterns:,} patterns"
+        )
+
+        # --- overdraft / micro-loan mule chain patterns ---
+        assert cfg.num_overdraft_mule_patterns is not None
+        mule_gen = OverdraftMuleGenerator(
+            num_patterns=cfg.num_overdraft_mule_patterns,
+            num_mules_range=cfg.overdraft_mule_num_mules_range,
+            loan_amount_range=cfg.overdraft_mule_loan_amount_range,
+        )
+        n_mule_tx, _ = mule_gen.generate(
+            max_account_id=cfg.num_accounts,
+            start_tx_id=next_tx_id_6,
+            embedder=embedder,
+            output_dir=cfg.output_dir,
+            fmt=cfg.output_format,
+            compress=cfg.compress,
+        )
+        print(
+            f"  Injected {n_mule_tx:,} overdraft mule transactions "
+            f"across {cfg.num_overdraft_mule_patterns:,} patterns"
         )
