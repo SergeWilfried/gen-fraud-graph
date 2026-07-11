@@ -71,31 +71,31 @@ def main(argv: list[str] | None = None) -> None:
         "--mobile-money-patterns",
         type=int,
         default=None,
-        help="Number of mobile money agent-commission fraud patterns to inject. Default: auto (based on scale).",
+        help="Number of mobile money agent-commission fraud patterns. Default: auto.",
     )
     parser.add_argument(
         "--trade-based-ml-patterns",
         type=int,
         default=None,
-        help="Number of trade-based money laundering (TBML) patterns to inject. Default: auto (based on scale).",
+        help="Number of trade-based money laundering (TBML) patterns. Default: auto.",
     )
     parser.add_argument(
         "--hawala-patterns",
         type=int,
         default=None,
-        help="Number of hawala / informal value transfer network patterns to inject. Default: auto (based on scale).",
+        help="Number of hawala / informal value transfer patterns. Default: auto.",
     )
     parser.add_argument(
         "--sim-swap-patterns",
         type=int,
         default=None,
-        help="Number of SIM-swap account takeover patterns to inject. Default: auto (based on scale).",
+        help="Number of SIM-swap account takeover patterns. Default: auto.",
     )
     parser.add_argument(
         "--overdraft-mule-patterns",
         type=int,
         default=None,
-        help="Number of overdraft/micro-loan mule chain patterns to inject. Default: auto (based on scale).",
+        help="Number of overdraft/micro-loan mule chain patterns. Default: auto.",
     )
     parser.add_argument(
         "--compress",

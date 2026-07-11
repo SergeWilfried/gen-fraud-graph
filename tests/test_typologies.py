@@ -332,9 +332,7 @@ class TestSIMSwap:
 
     def test_amounts_are_near_identical(self, tmp_dir):
         emb = EmbeddingGenerator("fake", dim=8)
-        gen = SIMSwapFraudGenerator(
-            num_patterns=1, num_agents_range=(4, 4), amount_jitter=0.05
-        )
+        gen = SIMSwapFraudGenerator(num_patterns=1, num_agents_range=(4, 4), amount_jitter=0.05)
         gen.generate(
             max_account_id=1000,
             start_tx_id=0,
@@ -359,8 +357,7 @@ class TestSIMSwap:
         )
         with open(os.path.join(tmp_dir, "fraud", "transactions_fraud.csv")) as fh:
             timestamps = [
-                datetime.strptime(r["timestamp"], "%Y-%m-%dT%H:%M:%S")
-                for r in csv.DictReader(fh)
+                datetime.strptime(r["timestamp"], "%Y-%m-%dT%H:%M:%S") for r in csv.DictReader(fh)
             ]
         span = max(timestamps) - min(timestamps)
         assert span <= timedelta(minutes=gen.burst_window_minutes)
@@ -441,7 +438,9 @@ class TestOverdraftMule:
 
         with open(os.path.join(tmp_dir, "fraud", "transactions_fraud.csv")) as fh:
             txs = list(csv.DictReader(fh))
-        mule_total = sum(float(t["amount"]) for t in txs if t["src_id"] in mules and t["dst_id"] == collector)
+        mule_total = sum(
+            float(t["amount"]) for t in txs if t["src_id"] in mules and t["dst_id"] == collector
+        )
         consolidation_amount = next(
             float(t["amount"]) for t in txs if t["src_id"] == collector and t["dst_id"] == agent
         )

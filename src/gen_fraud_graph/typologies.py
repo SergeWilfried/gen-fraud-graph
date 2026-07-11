@@ -7,37 +7,30 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 
 import numpy as np
 
 from gen_fraud_graph.embeddings import EmbeddingGenerator
 from gen_fraud_graph.exporters import append_csv, get_headers, write_output
+from gen_fraud_graph.schema import (
+    FRAUD_CASE_HEADERS,
+    TRANSACTION_DESCRIPTIONS,
+    iso_ts,
+    parse_date,
+    random_timestamp,
+    round_xof,
+    sample_lognormal_xof,
+)
 
-# ---------------------------------------------------------------------------
-# Suspicious transaction descriptions used across typologies
-# ---------------------------------------------------------------------------
+# Shared unseeded RNG for the typology generators (the module-level
+# ``random`` functions are used elsewhere; schema helpers want an
+# explicit ``random.Random``).
+_RNG = random.Random()
 
-SUSPICIOUS_DESCRIPTIONS: list[str] = [
-    "transfert offshore vers paradis fiscal",
-    "dépôt espèces sous le seuil de déclaration",
-    "transfert rapide entre comptes",
-    "paiement société écran",
-    "transfert en cascade via intermédiaire",
-    "transaction circulaire",
-    "activité soudaine sur compte dormant",
-    "virement transfrontalier de montant élevé",
-]
-
-# Description specific to structuring/smurfing patterns.
-STRUCTURING_DESCRIPTIONS: list[str] = [
-    "dépôt espèces sous le seuil de déclaration",
-    "multiples petits dépôts le même jour",
-    "paiement fractionné juste sous la limite",
-    "dépôt espèces progressif au guichet",
-    "dépôt espèces incrémental",
-    "dépôt répété près de la limite",
-    "transfert fragmenté pour échapper au contrôle",
-]
+# NOTE: injected rows deliberately reuse TRANSACTION_DESCRIPTIONS — the same
+# vocabulary as legitimate traffic. A separate "suspicious" wording pool
+# would leak the label through the description (and embedding) column.
 
 # ---------------------------------------------------------------------------
 # Fraud ring generator (cyclic money-laundering patterns)
@@ -51,16 +44,30 @@ class FraudRingGenerator:
     Each ring is a cycle of ``depth`` accounts connected by suspicious
     high-value transactions.
 
+    Per-hop amounts are correlated, not constant: each ring draws one
+    log-normal seed amount (overlapping the legitimate heavy tail) and
+    passes it around the cycle, each hop skimming a small cut. Hops are
+    spread hours-to-days apart across a multi-day window — laundering
+    cycles are slow compared to cash-out bursts.
+
     Args:
         num_rings: How many rings to create.
         depth_range: ``(min_depth, max_depth)`` hops per ring.
-        amount: Fixed transaction amount injected in fraud edges.
+        amount_median: Median of the log-normal seed amount, in FCFA.
+        amount_sigma: Log-normal sigma of the seed amount.
+        skim_range: Per-hop fractional skim applied as the sum moves.
+        sim_start_date: First day of the simulated window (``YYYY-MM-DD``).
+        sim_days: Length of the simulated window in days.
     """
 
     num_rings: int = 100
     depth_range: tuple[int, int] = (4, 7)
-    amount: float = 12_000_000.00
-    _descriptions: list[str] = field(default_factory=lambda: SUSPICIOUS_DESCRIPTIONS)
+    amount_median: int = 600_000
+    amount_sigma: float = 1.0
+    skim_range: tuple[float, float] = (0.01, 0.05)
+    sim_start_date: str = "2024-01-01"
+    sim_days: int = 90
+    _descriptions: list[str] = field(default_factory=lambda: TRANSACTION_DESCRIPTIONS)
 
     def generate(
         self,
@@ -84,17 +91,12 @@ class FraudRingGenerator:
         os.makedirs(fraud_dir, exist_ok=True)
 
         headers_tx = get_headers("transaction", fmt)  # type: ignore[arg-type]
-        headers_cases = [
-            "pattern_id",
-            "start_acc_id",
-            "pattern_type",
-            "depth",
-            "involved_accounts",
-        ]
+        headers_cases = FRAUD_CASE_HEADERS
 
         tx_rows: list[list] = []
         case_rows: list[list] = []
         current_tx_id = start_tx_id
+        sim_start = parse_date(self.sim_start_date)
         # Allocate every ring's accounts up front from one pool of distinct
         # ids, then give each ring its own slice. Overlapping ranges would
         # merge two rings into a single non-cycle component and make the
@@ -122,6 +124,13 @@ class FraudRingGenerator:
             batch_texts: list[str] = []
             batch_rows: list[list] = []
 
+            window_days = random.randint(2, 14)
+            start_day = random.randint(0, max(0, self.sim_days - window_days - 1))
+            ts = random_timestamp(_RNG, sim_start + timedelta(days=start_day), 1)
+            window_start = ts
+            hop_gap_cap = max(3_600, window_days * 86_400 // depth)
+            amount = sample_lognormal_xof(_RNG, self.amount_median, self.amount_sigma, lo=50_000)
+
             for k in range(depth):
                 src = accounts[k]
                 dst = accounts[(k + 1) % depth]
@@ -131,9 +140,15 @@ class FraudRingGenerator:
                 row: list = [f"tx_{current_tx_id}", src, dst]
                 if fmt == "neptune":
                     row.append("TRANSFER")
-                row.extend([self.amount, "2024-01-01T12:00:00", desc])
+                row.extend([amount, iso_ts(ts), desc])
                 batch_rows.append(row)
                 current_tx_id += 1
+
+                skim = random.uniform(*self.skim_range)
+                amount = max(5_000, round_xof(amount * (1 - skim)))
+                if k < depth - 1:
+                    ts += timedelta(seconds=random.randint(3_600, hop_gap_cap))
+            window_end = ts
 
             embeddings = embedder.generate(batch_texts)
 
@@ -153,6 +168,8 @@ class FraudRingGenerator:
                     "cycle",
                     depth,
                     involved,
+                    iso_ts(window_start),
+                    iso_ts(window_end),
                 ]
             )
 
@@ -196,8 +213,10 @@ class StructuringGenerator:
 
     num_patterns: int = 100
     smurfs_range: tuple[int, int] = (3, 10)
-    amount_range: tuple[float, float] = (4_000_000.00, 4_900_000.00)
-    _descriptions: list[str] = field(default_factory=lambda: STRUCTURING_DESCRIPTIONS)
+    amount_range: tuple[int, int] = (4_000_000, 4_950_000)
+    sim_start_date: str = "2024-01-01"
+    sim_days: int = 90
+    _descriptions: list[str] = field(default_factory=lambda: TRANSACTION_DESCRIPTIONS)
 
     def generate(
         self,
@@ -235,47 +254,48 @@ class StructuringGenerator:
         os.makedirs(fraud_dir, exist_ok=True)
 
         headers_tx = get_headers("transaction", fmt)  # type: ignore[arg-type]
-        headers_cases = [
-            "pattern_id",
-            "start_acc_id",
-            "pattern_type",
-            "depth",
-            "involved_accounts",
-        ]
+        headers_cases = FRAUD_CASE_HEADERS
 
         tx_rows: list[list] = []
         case_rows: list[list] = []
         current_tx_id = start_tx_id
+        sim_start = parse_date(self.sim_start_date)
 
         for pattern_id in tqdm(range(self.num_patterns), desc="Generating structuring patterns"):
             min_s, max_s = self.smurfs_range
             num_smurfs = random.randint(min_s, max_s)
 
-            # The coordinator sits at a random offset; smurfs occupy the
-            # num_smurfs slots immediately after it.  We need num_smurfs + 1
-            # consecutive IDs so we guard against tiny account pools.
+            # Draw the coordinator and smurfs anywhere in the account pool.
+            # Consecutive IDs would let a detector cheat on ID adjacency
+            # instead of the fan-in shape.
             needed = num_smurfs + 1
             if max_account_id < needed:
-                coordinator_idx = 0
-            else:
-                coordinator_idx = random.randint(0, max_account_id - needed)
+                num_smurfs = max(1, max_account_id - 1)
+                needed = num_smurfs + 1
 
-            coordinator = f"acc_{coordinator_idx}"
-            smurfs = [f"acc_{coordinator_idx + 1 + i}" for i in range(num_smurfs)]
+            idxs = random.sample(range(max_account_id), needed)
+            coordinator = f"acc_{idxs[0]}"
+            smurfs = [f"acc_{idxs[1 + i]}" for i in range(num_smurfs)]
             involved = "|".join([coordinator] + smurfs)
 
             batch_texts: list[str] = []
             batch_rows: list[list] = []
 
-            for smurf in smurfs:
-                amount = round(random.uniform(*self.amount_range), 2)
+            # Deposits land over one to three days.
+            window_days = random.randint(1, 3)
+            start_day = random.randint(0, max(0, self.sim_days - window_days - 1))
+            base = sim_start + timedelta(days=start_day)
+            ts_list = sorted(random_timestamp(_RNG, base, window_days) for _ in smurfs)
+
+            for smurf, ts in zip(smurfs, ts_list, strict=True):
+                amount = round_xof(random.uniform(*self.amount_range))
                 desc = random.choice(self._descriptions)
                 batch_texts.append(desc)
 
                 row: list = [f"tx_{current_tx_id}", smurf, coordinator]
                 if fmt == "neptune":
                     row.append("TRANSFER")
-                row.extend([amount, "2024-01-01T12:00:00", desc])
+                row.extend([amount, iso_ts(ts), desc])
                 batch_rows.append(row)
                 current_tx_id += 1
 
@@ -297,6 +317,8 @@ class StructuringGenerator:
                     "structuring",
                     num_smurfs,  # depth = number of feeder hops
                     involved,
+                    iso_ts(ts_list[0]),
+                    iso_ts(ts_list[-1]),
                 ]
             )
 
@@ -309,21 +331,12 @@ class StructuringGenerator:
         return len(tx_rows), current_tx_id
 
 
-MOBILE_MONEY_DESCRIPTIONS: list[str] = [
-    "dépôt cash wave",
-    "retrait espèces agent",
-    "transfert mobile money",
-    "commission agent m-pesa/orange",
-    "paiement marchand mobile",
-]
-
-
 @dataclass
 class MobileMoneyFraudGenerator:
     """Generate mobile money specific fraud patterns (Agent commission fraud).
-    
-    This models a split transaction scheme where an agent divides a single 
-    large deposit into a burst of small transfers to artificially inflate 
+
+    This models a split transaction scheme where an agent divides a single
+    large deposit into a burst of small transfers to artificially inflate
     commissions.
 
     Graph shape::
@@ -335,9 +348,11 @@ class MobileMoneyFraudGenerator:
     """
 
     num_patterns: int = 100
-    amount_range: tuple[float, float] = (10_000.00, 50_000.00)
+    amount_range: tuple[int, int] = (5_000, 25_000)
     burst_window_minutes: int = 10  # max minutes between split transactions in a burst
-    _descriptions: list[str] = field(default_factory=lambda: MOBILE_MONEY_DESCRIPTIONS)
+    sim_start_date: str = "2024-01-01"
+    sim_days: int = 90
+    _descriptions: list[str] = field(default_factory=lambda: TRANSACTION_DESCRIPTIONS)
 
     def generate(
         self,
@@ -350,7 +365,6 @@ class MobileMoneyFraudGenerator:
     ) -> tuple[int, int]:
         """Generate mobile money patterns and append to fraud output files."""
         import os
-        from datetime import datetime, timedelta
 
         from tqdm import tqdm
 
@@ -358,17 +372,13 @@ class MobileMoneyFraudGenerator:
         if max_account_id < 2:
             return 0, start_tx_id
 
+        sim_start = parse_date(self.sim_start_date)
+
         fraud_dir = os.path.join(output_dir, "fraud")
         os.makedirs(fraud_dir, exist_ok=True)
 
         headers_tx = get_headers("transaction", fmt)  # type: ignore[arg-type]
-        headers_cases = [
-            "pattern_id",
-            "start_acc_id",
-            "pattern_type",
-            "depth",
-            "involved_accounts",
-        ]
+        headers_cases = FRAUD_CASE_HEADERS
 
         tx_rows: list[list] = []
         case_rows: list[list] = []
@@ -383,21 +393,22 @@ class MobileMoneyFraudGenerator:
 
             num_txs = random.randint(4, 10)
 
-            # Burst base time: random minute within a single day, then each
-            # split tx is offset by a small random increment to simulate a
-            # rapid burst — essential for time-based detection algorithms.
-            base_ts = datetime(2024, 1, 1, random.randint(8, 20), random.randint(0, 59))
+            # Burst base time: random point in the simulated window, then
+            # each split tx is offset by a small random increment to
+            # simulate a rapid burst — essential for velocity detection.
+            base_ts = random_timestamp(_RNG, sim_start, self.sim_days)
 
             batch_texts: list[str] = []
             batch_rows: list[list] = []
             elapsed_seconds = 0
 
             for _ in range(num_txs):
-                amount = round(random.uniform(*self.amount_range), 2)
+                amount = round_xof(random.uniform(*self.amount_range))
                 desc = random.choice(self._descriptions)
                 batch_texts.append(desc)
 
-                tx_ts = (base_ts + timedelta(seconds=elapsed_seconds)).strftime("%Y-%m-%dT%H:%M:%S")
+                tx_ts = iso_ts(base_ts + timedelta(seconds=elapsed_seconds))
+                last_offset = elapsed_seconds
                 max_gap = max(30, self.burst_window_minutes * 60 // num_txs)
                 elapsed_seconds += random.randint(30, max_gap)
 
@@ -426,6 +437,8 @@ class MobileMoneyFraudGenerator:
                     "mobile_money_split",
                     num_txs,
                     involved,
+                    iso_ts(base_ts),
+                    iso_ts(base_ts + timedelta(seconds=last_offset)),
                 ]
             )
 
@@ -435,14 +448,6 @@ class MobileMoneyFraudGenerator:
         append_csv(file_cases + ".csv", headers_cases, case_rows)
 
         return len(tx_rows), current_tx_id
-
-
-TBML_DESCRIPTIONS: list[str] = [
-    "paiement facture import coton",
-    "règlement fournisseur Chine",
-    "sur-facturation équipements",
-    "importation fantôme marchandises",
-]
 
 
 @dataclass
@@ -488,8 +493,10 @@ class TradeBasedMLGenerator:
 
     num_patterns: int = 100
     intermediaries_range: tuple[int, int] = (3, 5)
-    amount_range: tuple[float, float] = (20_000_000.00, 150_000_000.00)
-    _descriptions: list[str] = field(default_factory=lambda: TBML_DESCRIPTIONS)
+    amount_range: tuple[int, int] = (2_000_000, 15_000_000)
+    sim_start_date: str = "2024-01-01"
+    sim_days: int = 90
+    _descriptions: list[str] = field(default_factory=lambda: TRANSACTION_DESCRIPTIONS)
 
     def generate(
         self,
@@ -521,17 +528,12 @@ class TradeBasedMLGenerator:
         os.makedirs(fraud_dir, exist_ok=True)
 
         headers_tx = get_headers("transaction", fmt)  # type: ignore[arg-type]
-        headers_cases = [
-            "pattern_id",
-            "start_acc_id",
-            "pattern_type",
-            "depth",
-            "involved_accounts",
-        ]
+        headers_cases = FRAUD_CASE_HEADERS
 
         tx_rows: list[list] = []
         case_rows: list[list] = []
         current_tx_id = start_tx_id
+        sim_start = parse_date(self.sim_start_date)
 
         for pattern_id in tqdm(range(self.num_patterns), desc="Generating TBML patterns"):
             min_k, max_k = self.intermediaries_range
@@ -557,17 +559,27 @@ class TradeBasedMLGenerator:
             edges.extend((shell_importer, inter) for inter in intermediaries)
             edges.extend((inter, beneficiary) for inter in intermediaries)
 
+            # Invoice settlement then layering: hops land hours-to-days
+            # apart over a multi-week window.
+            window_days = random.randint(3, 21)
+            start_day = random.randint(0, max(0, self.sim_days - window_days - 1))
+            ts = random_timestamp(_RNG, sim_start + timedelta(days=start_day), 1)
+            window_start = ts
+            hop_gap_cap = max(21_600, window_days * 86_400 // len(edges))
+
             for src, dst in edges:
-                amount = round(random.uniform(*self.amount_range), 2)
+                amount = round_xof(random.uniform(*self.amount_range))
                 desc = random.choice(self._descriptions)
                 batch_texts.append(desc)
 
                 row: list = [f"tx_{current_tx_id}", src, dst]
                 if fmt == "neptune":
                     row.append("TRANSFER")
-                row.extend([amount, "2024-01-01T12:00:00", desc])
+                row.extend([amount, iso_ts(ts), desc])
                 batch_rows.append(row)
                 current_tx_id += 1
+                ts += timedelta(seconds=random.randint(21_600, hop_gap_cap))
+            window_end = ts
 
             embeddings = embedder.generate(batch_texts)
 
@@ -587,6 +599,8 @@ class TradeBasedMLGenerator:
                     "trade_based_ml",
                     k,
                     involved,
+                    iso_ts(window_start),
+                    iso_ts(window_end),
                 ]
             )
 
@@ -596,14 +610,6 @@ class TradeBasedMLGenerator:
         append_csv(file_cases + ".csv", headers_cases, case_rows)
 
         return len(tx_rows), current_tx_id
-
-
-HAWALA_DESCRIPTIONS: list[str] = [
-    "transfert informel corridor Dakar-Abidjan",
-    "règlement hawaladar",
-    "compensation informelle",
-    "envoi de fonds sous-régional",
-]
 
 
 @dataclass
@@ -649,10 +655,12 @@ class HawalaNetworkGenerator:
     """
 
     num_patterns: int = 100
-    transfer_amount_range: tuple[float, float] = (100_000.00, 2_000_000.00)
-    settlement_amount_range: tuple[float, float] = (5_000_000.00, 50_000_000.00)
+    transfer_amount_range: tuple[int, int] = (50_000, 1_500_000)
+    settlement_amount_range: tuple[int, int] = (2_000_000, 12_000_000)
     settlement_probability: float = 0.3
-    _descriptions: list[str] = field(default_factory=lambda: HAWALA_DESCRIPTIONS)
+    sim_start_date: str = "2024-01-01"
+    sim_days: int = 90
+    _descriptions: list[str] = field(default_factory=lambda: TRANSACTION_DESCRIPTIONS)
 
     def generate(
         self,
@@ -683,17 +691,12 @@ class HawalaNetworkGenerator:
         os.makedirs(fraud_dir, exist_ok=True)
 
         headers_tx = get_headers("transaction", fmt)  # type: ignore[arg-type]
-        headers_cases = [
-            "pattern_id",
-            "start_acc_id",
-            "pattern_type",
-            "depth",
-            "involved_accounts",
-        ]
+        headers_cases = FRAUD_CASE_HEADERS
 
         tx_rows: list[list] = []
         case_rows: list[list] = []
         current_tx_id = start_tx_id
+        sim_start = parse_date(self.sim_start_date)
 
         for pattern_id in tqdm(range(self.num_patterns), desc="Generating hawala patterns"):
             idxs = random.sample(range(max_account_id), 4)
@@ -706,27 +709,44 @@ class HawalaNetworkGenerator:
             batch_texts: list[str] = []
             batch_rows: list[list] = []
 
-            edges: list[tuple[str, str, tuple[float, float]]] = [
-                (sender, hawaladar_a, self.transfer_amount_range),
-                (hawaladar_a, hawaladar_b, self.settlement_amount_range),
-                (hawaladar_b, beneficiary, self.transfer_amount_range),
+            # Deposit at t0, payout minutes-to-hours later, bulk
+            # settlement wires days later — hawala moves value fast and
+            # nets debt slowly.
+            start_day = random.randint(0, max(0, self.sim_days - 9))
+            t_deposit = random_timestamp(_RNG, sim_start + timedelta(days=start_day), 1)
+            t_payout = t_deposit + timedelta(minutes=random.randint(10, 300))
+            t_settle = t_deposit + timedelta(
+                days=random.randint(1, 7), minutes=random.randint(0, 720)
+            )
+
+            edges: list[tuple[str, str, tuple[int, int], datetime]] = [
+                (sender, hawaladar_a, self.transfer_amount_range, t_deposit),
+                (hawaladar_a, hawaladar_b, self.settlement_amount_range, t_settle),
+                (hawaladar_b, beneficiary, self.transfer_amount_range, t_payout),
             ]
             if random.random() < self.settlement_probability:
+                t_settle_2 = t_settle + timedelta(minutes=random.randint(30, 2_880))
                 if random.random() < 0.5:
-                    edges.append((hawaladar_b, hawaladar_a, self.settlement_amount_range))
+                    edges.append(
+                        (hawaladar_b, hawaladar_a, self.settlement_amount_range, t_settle_2)
+                    )
                 else:
-                    edges.append((hawaladar_a, hawaladar_b, self.settlement_amount_range))
+                    edges.append(
+                        (hawaladar_a, hawaladar_b, self.settlement_amount_range, t_settle_2)
+                    )
             depth = len(edges)
+            window_start = min(ts for _, _, _, ts in edges)
+            window_end = max(ts for _, _, _, ts in edges)
 
-            for src, dst, amount_range in edges:
-                amount = round(random.uniform(*amount_range), 2)
+            for src, dst, amount_range, ts in edges:
+                amount = round_xof(random.uniform(*amount_range))
                 desc = random.choice(self._descriptions)
                 batch_texts.append(desc)
 
                 row: list = [f"tx_{current_tx_id}", src, dst]
                 if fmt == "neptune":
                     row.append("TRANSFER")
-                row.extend([amount, "2024-01-01T12:00:00", desc])
+                row.extend([amount, iso_ts(ts), desc])
                 batch_rows.append(row)
                 current_tx_id += 1
 
@@ -748,6 +768,8 @@ class HawalaNetworkGenerator:
                     "hawala_network",
                     depth,
                     involved,
+                    iso_ts(window_start),
+                    iso_ts(window_end),
                 ]
             )
 
@@ -757,14 +779,6 @@ class HawalaNetworkGenerator:
         append_csv(file_cases + ".csv", headers_cases, case_rows)
 
         return len(tx_rows), current_tx_id
-
-
-SIM_SWAP_DESCRIPTIONS: list[str] = [
-    "retrait immédiat après changement de carte SIM",
-    "vidage de compte suite à piratage SIM",
-    "retrait cash-out agent après prise de contrôle",
-    "transfert suspect fenêtre courte post SIM swap",
-]
 
 
 @dataclass
@@ -812,10 +826,12 @@ class SIMSwapFraudGenerator:
 
     num_patterns: int = 100
     num_agents_range: tuple[int, int] = (3, 6)
-    amount_range: tuple[float, float] = (20_000.00, 300_000.00)
+    amount_range: tuple[int, int] = (20_000, 300_000)
     amount_jitter: float = 0.05
     burst_window_minutes: int = 10
-    _descriptions: list[str] = field(default_factory=lambda: SIM_SWAP_DESCRIPTIONS)
+    sim_start_date: str = "2024-01-01"
+    sim_days: int = 90
+    _descriptions: list[str] = field(default_factory=lambda: TRANSACTION_DESCRIPTIONS)
 
     def generate(
         self,
@@ -836,7 +852,6 @@ class SIMSwapFraudGenerator:
             ``(num_fraud_transactions, next_tx_id)``
         """
         import os
-        from datetime import datetime, timedelta
 
         from tqdm import tqdm
 
@@ -847,17 +862,12 @@ class SIMSwapFraudGenerator:
         os.makedirs(fraud_dir, exist_ok=True)
 
         headers_tx = get_headers("transaction", fmt)  # type: ignore[arg-type]
-        headers_cases = [
-            "pattern_id",
-            "start_acc_id",
-            "pattern_type",
-            "depth",
-            "involved_accounts",
-        ]
+        headers_cases = FRAUD_CASE_HEADERS
 
         tx_rows: list[list] = []
         case_rows: list[list] = []
         current_tx_id = start_tx_id
+        sim_start = parse_date(self.sim_start_date)
 
         for pattern_id in tqdm(range(self.num_patterns), desc="Generating SIM-swap patterns"):
             min_n, max_n = self.num_agents_range
@@ -874,22 +884,24 @@ class SIMSwapFraudGenerator:
             cashout_agents = [f"acc_{idxs[1 + i]}" for i in range(n)]
             involved = "|".join([victim] + cashout_agents)
 
-            base_amount = round(random.uniform(*self.amount_range), 2)
+            base_amount = round_xof(random.uniform(*self.amount_range))
 
-            base_ts = datetime(2024, 1, 1, random.randint(8, 20), random.randint(0, 59))
+            base_ts = random_timestamp(_RNG, sim_start, self.sim_days)
             max_gap = max(30, self.burst_window_minutes * 60 // n)
             elapsed_seconds = 0
+            last_offset = 0
 
             batch_texts: list[str] = []
             batch_rows: list[list] = []
 
             for agent in cashout_agents:
                 jitter = random.uniform(1 - self.amount_jitter, 1 + self.amount_jitter)
-                amount = round(base_amount * jitter, 2)
+                amount = round_xof(base_amount * jitter)
                 desc = random.choice(self._descriptions)
                 batch_texts.append(desc)
 
-                tx_ts = (base_ts + timedelta(seconds=elapsed_seconds)).strftime("%Y-%m-%dT%H:%M:%S")
+                tx_ts = iso_ts(base_ts + timedelta(seconds=elapsed_seconds))
+                last_offset = elapsed_seconds
                 elapsed_seconds += random.randint(30, max_gap)
 
                 row: list = [f"tx_{current_tx_id}", victim, agent]
@@ -917,6 +929,8 @@ class SIMSwapFraudGenerator:
                     "sim_swap_takeover",
                     n,
                     involved,
+                    iso_ts(base_ts),
+                    iso_ts(base_ts + timedelta(seconds=last_offset)),
                 ]
             )
 
@@ -926,14 +940,6 @@ class SIMSwapFraudGenerator:
         append_csv(file_cases + ".csv", headers_cases, case_rows)
 
         return len(tx_rows), current_tx_id
-
-
-OVERDRAFT_MULE_DESCRIPTIONS: list[str] = [
-    "décaissement prêt mobile microcrédit",
-    "transfert produit de prêt vers collecteur",
-    "retrait consolidé agent après décaissements",
-    "compte mule prêt unique",
-]
 
 
 @dataclass
@@ -974,8 +980,10 @@ class OverdraftMuleGenerator:
 
     num_patterns: int = 100
     num_mules_range: tuple[int, int] = (5, 15)
-    loan_amount_range: tuple[float, float] = (25_000.00, 150_000.00)
-    _descriptions: list[str] = field(default_factory=lambda: OVERDRAFT_MULE_DESCRIPTIONS)
+    loan_amount_range: tuple[int, int] = (25_000, 150_000)
+    sim_start_date: str = "2024-01-01"
+    sim_days: int = 90
+    _descriptions: list[str] = field(default_factory=lambda: TRANSACTION_DESCRIPTIONS)
 
     def generate(
         self,
@@ -1007,17 +1015,12 @@ class OverdraftMuleGenerator:
         os.makedirs(fraud_dir, exist_ok=True)
 
         headers_tx = get_headers("transaction", fmt)  # type: ignore[arg-type]
-        headers_cases = [
-            "pattern_id",
-            "start_acc_id",
-            "pattern_type",
-            "depth",
-            "involved_accounts",
-        ]
+        headers_cases = FRAUD_CASE_HEADERS
 
         tx_rows: list[list] = []
         case_rows: list[list] = []
         current_tx_id = start_tx_id
+        sim_start = parse_date(self.sim_start_date)
 
         for pattern_id in tqdm(range(self.num_patterns), desc="Generating overdraft mule patterns"):
             min_n, max_n = self.num_mules_range
@@ -1038,9 +1041,15 @@ class OverdraftMuleGenerator:
             batch_texts: list[str] = []
             batch_rows: list[list] = []
 
-            mule_amounts: list[float] = []
-            for mule in mules:
-                amount = round(random.uniform(*self.loan_amount_range), 2)
+            # Loan disbursements are forwarded over a single day; the
+            # collector cashes out a few hours after the last one.
+            start_day = random.randint(0, max(0, self.sim_days - 2))
+            base = sim_start + timedelta(days=start_day)
+            ts_list = sorted(random_timestamp(_RNG, base, 1) for _ in mules)
+
+            mule_amounts: list[int] = []
+            for mule, ts in zip(mules, ts_list, strict=True):
+                amount = round_xof(random.uniform(*self.loan_amount_range))
                 mule_amounts.append(amount)
                 desc = random.choice(self._descriptions)
                 batch_texts.append(desc)
@@ -1048,17 +1057,18 @@ class OverdraftMuleGenerator:
                 row: list = [f"tx_{current_tx_id}", mule, collector]
                 if fmt == "neptune":
                     row.append("TRANSFER")
-                row.extend([amount, "2024-01-01T12:00:00", desc])
+                row.extend([amount, iso_ts(ts), desc])
                 batch_rows.append(row)
                 current_tx_id += 1
 
-            consolidation_amount = round(sum(mule_amounts), 2)
+            consolidation_amount = sum(mule_amounts)
+            t_cashout = ts_list[-1] + timedelta(minutes=random.randint(60, 360))
             desc = random.choice(self._descriptions)
             batch_texts.append(desc)
             row = [f"tx_{current_tx_id}", collector, agent]
             if fmt == "neptune":
                 row.append("TRANSFER")
-            row.extend([consolidation_amount, "2024-01-01T13:00:00", desc])
+            row.extend([consolidation_amount, iso_ts(t_cashout), desc])
             batch_rows.append(row)
             current_tx_id += 1
 
@@ -1080,6 +1090,8 @@ class OverdraftMuleGenerator:
                     "overdraft_mule_chain",
                     n,
                     involved,
+                    iso_ts(ts_list[0]),
+                    iso_ts(t_cashout),
                 ]
             )
 

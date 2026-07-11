@@ -186,6 +186,7 @@ class TestFraudRings:
 # End-to-end generator tests
 # ---------------------------------------------------------------------------
 
+
 class TestWorkloadPlanning:
     def test_split_workload_distributes_remainder(self):
         shards = _split_workload(10, 3)
@@ -386,9 +387,9 @@ class TestStructuringGenerator:
                 if dst in coordinators:
                     src = row["src_id"]
                     # source must be a known smurf for this coordinator
-                    assert src in coordinators[dst], (
-                        f"src {src} not a registered smurf of coordinator {dst}"
-                    )
+                    assert (
+                        src in coordinators[dst]
+                    ), f"src {src} not a registered smurf of coordinator {dst}"
 
     def test_tx_ids_do_not_collide_with_start(self, tmp_dir):
         """Transaction IDs must begin at start_tx_id and never reuse prior IDs."""

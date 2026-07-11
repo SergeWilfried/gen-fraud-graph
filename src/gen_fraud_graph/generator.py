@@ -9,6 +9,7 @@ import csv
 import os
 import random
 from concurrent.futures import ProcessPoolExecutor
+from datetime import timedelta
 
 import numpy as np
 from tqdm import tqdm
@@ -16,6 +17,13 @@ from tqdm import tqdm
 from gen_fraud_graph.config import Config
 from gen_fraud_graph.embeddings import EmbeddingGenerator
 from gen_fraud_graph.exporters import get_headers
+from gen_fraud_graph.schema import (
+    TRANSACTION_DESCRIPTIONS,
+    iso_ts,
+    parse_date,
+    random_timestamp,
+    sample_lognormal_xof,
+)
 from gen_fraud_graph.typologies import (
     FraudRingGenerator,
     HawalaNetworkGenerator,
@@ -26,22 +34,15 @@ from gen_fraud_graph.typologies import (
     TradeBasedMLGenerator,
 )
 
-# ---------------------------------------------------------------------------
-# Normal transaction descriptions
-# ---------------------------------------------------------------------------
+# Marginal shape of legitimate transaction amounts (XOF). The heavy
+# log-normal tail matters: it is what fraud typology amount ranges overlap
+# with, so no amount band is fraud-only.
+TX_AMOUNT_MEDIAN = 12_000
+TX_AMOUNT_SIGMA = 1.4
 
-NORMAL_DESCRIPTIONS: list[str] = [
-    "achat supermarché",
-    "dépôt salaire",
-    "paiement facture Senelec/CIE",
-    "abonnement en ligne",
-    "paiement restaurant",
-    "retrait GAB",
-    "transfert mobile money",
-    "prime assurance",
-    "paiement loyer",
-    "dépôt investissement",
-]
+# Legitimate account balances (XOF).
+BALANCE_MEDIAN = 50_000
+BALANCE_SIGMA = 1.5
 
 
 # ---------------------------------------------------------------------------
@@ -80,10 +81,12 @@ def _generate_accounts_chunk(
     dim: int,
     output_dir: str,
     fmt: str = "csv",
+    sim_start_date: str = "2024-01-01",
 ) -> str:
     """Generate a chunk of account rows (called by ProcessPoolExecutor)."""
-    random.seed(start_id)
+    rng = random.Random(start_id)
     embedder = EmbeddingGenerator(provider, dim=dim)  # type: ignore[arg-type]
+    sim_start = parse_date(sim_start_date)
 
     acc_dir = os.path.join(output_dir, "accounts")
     os.makedirs(acc_dir, exist_ok=True)
@@ -118,12 +121,15 @@ def _generate_accounts_chunk(
                 name = f"Customer_{uid}"
                 batch_texts.append(name)
 
+                # Accounts open over the three years leading up to the
+                # simulated activity window.
+                opened = sim_start - timedelta(days=rng.randint(1, 3 * 365))
                 row: list = [
                     aid,
                     name,
-                    round(random.uniform(50_000, 50_000_000), 2),
-                    round(random.uniform(0, 1), 4),
-                    "2023-01-01",
+                    sample_lognormal_xof(rng, BALANCE_MEDIAN, BALANCE_SIGMA, lo=0, hi=100_000_000),
+                    round(rng.uniform(0, 1), 4),
+                    opened.strftime("%Y-%m-%d"),
                 ]
                 if fmt == "neptune":
                     row.insert(1, "Account")
@@ -157,10 +163,13 @@ def _generate_transactions_chunk(
     dim: int,
     output_dir: str,
     fmt: str = "csv",
+    sim_start_date: str = "2024-01-01",
+    sim_days: int = 90,
 ) -> str:
     """Generate a chunk of transaction rows (called by ProcessPoolExecutor)."""
-    random.seed(start_tx_id)
+    rng = random.Random(start_tx_id)
     embedder = EmbeddingGenerator(provider, dim=dim)  # type: ignore[arg-type]
+    sim_start = parse_date(sim_start_date)
 
     tx_dir = os.path.join(output_dir, "transactions")
     os.makedirs(tx_dir, exist_ok=True)
@@ -191,20 +200,20 @@ def _generate_transactions_chunk(
 
             for j in range(chunk_count):
                 tx_uid = start_tx_id + i + j
-                src = f"acc_{random.randint(0, total_accounts - 1)}"
-                dst = f"acc_{random.randint(0, total_accounts - 1)}"
+                src = f"acc_{rng.randint(0, total_accounts - 1)}"
+                dst = f"acc_{rng.randint(0, total_accounts - 1)}"
                 while src == dst:
-                    dst = f"acc_{random.randint(0, total_accounts - 1)}"
+                    dst = f"acc_{rng.randint(0, total_accounts - 1)}"
 
-                desc = random.choice(NORMAL_DESCRIPTIONS)
+                desc = rng.choice(TRANSACTION_DESCRIPTIONS)
                 batch_texts.append(desc)
 
                 row: list = [
                     f"tx_{tx_uid}",
                     src,
                     dst,
-                    round(random.uniform(5_000, 500_000), 2),
-                    "2024-01-01T10:00:00",
+                    sample_lognormal_xof(rng, TX_AMOUNT_MEDIAN, TX_AMOUNT_SIGMA),
+                    iso_ts(random_timestamp(rng, sim_start, sim_days)),
                     desc,
                 ]
                 if fmt == "neptune":
@@ -320,6 +329,7 @@ class FraudGraphGenerator:
                             cfg.embedding_dim,
                             cfg.output_dir,
                             cfg.output_format,
+                            cfg.sim_start_date,
                         )
                     )
             for f in tqdm(futures, total=len(futures), desc="Account batches"):
@@ -349,6 +359,8 @@ class FraudGraphGenerator:
                             cfg.embedding_dim,
                             cfg.output_dir,
                             cfg.output_format,
+                            cfg.sim_start_date,
+                            cfg.sim_days,
                         )
                     )
             for f in tqdm(futures, total=len(futures), desc="Transaction batches"):
@@ -365,6 +377,8 @@ class FraudGraphGenerator:
         ring_gen = FraudRingGenerator(
             num_rings=cfg.num_fraud_rings,
             depth_range=cfg.fraud_ring_depth_range,
+            sim_start_date=cfg.sim_start_date,
+            sim_days=cfg.sim_days,
         )
         n_ring_tx, next_tx_id = ring_gen.generate(
             max_account_id=cfg.num_accounts,
@@ -382,6 +396,8 @@ class FraudGraphGenerator:
             num_patterns=cfg.num_structuring_patterns,
             smurfs_range=cfg.structuring_smurfs_range,
             amount_range=cfg.structuring_amount_range,
+            sim_start_date=cfg.sim_start_date,
+            sim_days=cfg.sim_days,
         )
         n_struct_tx, next_tx_id_2 = struct_gen.generate(
             max_account_id=cfg.num_accounts,
@@ -401,6 +417,8 @@ class FraudGraphGenerator:
         mm_gen = MobileMoneyFraudGenerator(
             num_patterns=cfg.num_mobile_money_patterns,
             amount_range=cfg.mobile_money_amount_range,
+            sim_start_date=cfg.sim_start_date,
+            sim_days=cfg.sim_days,
         )
         n_mm_tx, next_tx_id_3 = mm_gen.generate(
             max_account_id=cfg.num_accounts,
@@ -421,6 +439,8 @@ class FraudGraphGenerator:
             num_patterns=cfg.num_trade_based_ml_patterns,
             intermediaries_range=cfg.trade_based_ml_intermediaries_range,
             amount_range=cfg.trade_based_ml_amount_range,
+            sim_start_date=cfg.sim_start_date,
+            sim_days=cfg.sim_days,
         )
         n_tbml_tx, next_tx_id_4 = tbml_gen.generate(
             max_account_id=cfg.num_accounts,
@@ -441,6 +461,8 @@ class FraudGraphGenerator:
             num_patterns=cfg.num_hawala_patterns,
             settlement_amount_range=cfg.hawala_settlement_amount_range,
             transfer_amount_range=cfg.hawala_transfer_amount_range,
+            sim_start_date=cfg.sim_start_date,
+            sim_days=cfg.sim_days,
         )
         n_hawala_tx, next_tx_id_5 = hawala_gen.generate(
             max_account_id=cfg.num_accounts,
@@ -461,6 +483,8 @@ class FraudGraphGenerator:
             num_patterns=cfg.num_sim_swap_patterns,
             num_agents_range=cfg.sim_swap_agents_range,
             amount_range=cfg.sim_swap_amount_range,
+            sim_start_date=cfg.sim_start_date,
+            sim_days=cfg.sim_days,
         )
         n_simswap_tx, next_tx_id_6 = simswap_gen.generate(
             max_account_id=cfg.num_accounts,
@@ -481,6 +505,8 @@ class FraudGraphGenerator:
             num_patterns=cfg.num_overdraft_mule_patterns,
             num_mules_range=cfg.overdraft_mule_num_mules_range,
             loan_amount_range=cfg.overdraft_mule_loan_amount_range,
+            sim_start_date=cfg.sim_start_date,
+            sim_days=cfg.sim_days,
         )
         n_mule_tx, _ = mule_gen.generate(
             max_account_id=cfg.num_accounts,

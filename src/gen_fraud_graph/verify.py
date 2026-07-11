@@ -71,7 +71,10 @@ def verify_fraud_patterns(
                 # Pattern: agent -> customer (multiple parallel edges)
                 # involved_accounts is "agent|customer", depth is the number of splits.
                 if len(accounts) < 2:
-                    print(f"  WARN: {pattern_id} — mobile_money_split has fewer than 2 accounts, skipping")
+                    print(
+                        f"  WARN: {pattern_id} — mobile_money_split has fewer "
+                        f"than 2 accounts, skipping"
+                    )
                     continue
                 agent, customer = accounts[0], accounts[1]
                 if customer not in edges.get(agent, set()):
@@ -82,7 +85,10 @@ def verify_fraud_patterns(
                 #          -> beneficiary (fan-in), for i in range(depth).
                 # involved_accounts = exporter|shell_importer|intermediary_0..k-1|beneficiary
                 if len(accounts) < 5:
-                    print(f"  WARN: {pattern_id} — trade_based_ml has fewer than 5 accounts, skipping")
+                    print(
+                        f"  WARN: {pattern_id} — trade_based_ml has fewer "
+                        f"than 5 accounts, skipping"
+                    )
                     continue
                 exporter, shell_importer = accounts[0], accounts[1]
                 intermediaries = accounts[2 : 2 + depth]
@@ -108,7 +114,10 @@ def verify_fraud_patterns(
                 # isolation, so a coincidental edge between the same two
                 # hawaladars can't be distinguished from this pattern's own.
                 if len(accounts) < 4:
-                    print(f"  WARN: {pattern_id} — hawala_network has fewer than 4 accounts, skipping")
+                    print(
+                        f"  WARN: {pattern_id} — hawala_network has fewer "
+                        f"than 4 accounts, skipping"
+                    )
                     continue
                 sender, hawaladar_a, hawaladar_b, beneficiary = accounts[:4]
                 if hawaladar_a not in edges.get(sender, set()):
@@ -126,7 +135,10 @@ def verify_fraud_patterns(
                 # Pattern: victim -> cashout_agent_i (fan-out), for each cash-out agent.
                 # involved_accounts = victim|cashout_agent_0|...|cashout_agent_{depth-1}
                 if len(accounts) < 2:
-                    print(f"  WARN: {pattern_id} — sim_swap_takeover has fewer than 2 accounts, skipping")
+                    print(
+                        f"  WARN: {pattern_id} — sim_swap_takeover has fewer "
+                        f"than 2 accounts, skipping"
+                    )
                     continue
                 victim = accounts[0]
                 cashout_agents = accounts[1:]
@@ -139,7 +151,10 @@ def verify_fraud_patterns(
                 # Pattern: mule_i -> collector (fan-in), collector -> agent (consolidation).
                 # involved_accounts = collector|mule_0|...|mule_{depth-1}|agent
                 if len(accounts) < 3:
-                    print(f"  WARN: {pattern_id} — overdraft_mule_chain has fewer than 3 accounts, skipping")
+                    print(
+                        f"  WARN: {pattern_id} — overdraft_mule_chain has fewer "
+                        f"than 3 accounts, skipping"
+                    )
                     continue
                 collector = accounts[0]
                 mules = accounts[1:-1]
