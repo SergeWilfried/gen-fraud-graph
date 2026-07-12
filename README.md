@@ -139,34 +139,42 @@ python -m gen_fraud_graph.verify --data-dir ./data
 
 ### Measure Benchmark Difficulty
 
-A tabular XGBoost baseline ([`examples/baseline_xgb.py`](examples/baseline_xgb.py))
+A baseline ladder ([`examples/baseline_xgb.py`](examples/baseline_xgb.py))
 closes the loop: it reads the generated output directly, derives labels from
-provenance, and reports the metrics fraud-ops teams use. Run it after any
-generator change — if a trivial feature (amount alone, a wording flag) tops
-its importance list with a near-perfect score, the generator has a label leak.
+provenance, and trains one XGBoost model per cumulative feature tier —
+bank-style columns, + velocity, + the MoMo schema, + graph topology. The
+gaps between rungs are the point: they show that no single column solves
+the benchmark and quantify what each signal layer is worth. Run it after
+any generator change — a near-perfect bottom rung means a label leak.
 
 ```bash
 pip install 'gen-fraud-graph[baseline]'
-python examples/baseline_xgb.py --data-dir ./data
+python examples/baseline_xgb.py --data-dir ./data              # full ladder
+python examples/baseline_xgb.py --data-dir ./data --tier graph # one tier, detailed
 ```
 
-Reference numbers on a 455K-transaction dataset (50K wallets, 730 injected
+Reference ladder on a 455K-transaction dataset (50K wallets, 730 injected
 patterns, ~1% fraud edges; unseeded generation, so expect run-to-run
-variation of a few points):
+variation of a few points). Metrics are on the test slice of a temporal
+split; the right-hand columns are per-typology pattern recall at a 1%-FPR
+alert threshold:
 
-| Metric (test slice, temporal split) | Score |
-|:---|:---|
-| PR-AUC | ~0.87 (random ≈ 0.009) |
-| Fraud caught @ 1% FPR | ~91% |
-| Fraud caught @ 0.1% FPR | ~76% |
+| Tier | PR-AUC | R@1% FPR | R@0.1% FPR | Commission splits | SIM-swap | Mule chains | Cycles |
+|:---|---:|---:|---:|---:|---:|---:|---:|
+| `amounts` (bank-style) | 0.23 | 37% | 13% | 0/22 | 2/19 | 10/10 | 11/12 |
+| `velocity` | 0.76 | 79% | 61% | 22/22 | 17/19 | 9/10 | 11/12 |
+| `schema` (MoMo fields) | 0.88 | 91% | 76% | 22/22 | 19/19 | 10/10 | 11/12 |
+| `graph` (topology) | 0.91 | 93% | 84% | 22/22 | 19/19 | 10/10 | 11/12 |
 
-Per-typology pattern recall shows where the tabular signal comes from —
-burst velocity catches the fast typologies (SIM-swap, commission splits,
-mule cash-outs ≈ 100%), while slow multi-day laundering cycles are the
-hardest (~92%) and are where graph-structural features have the most
-headroom. No single column separates fraud from background: the top
-features are tariff/velocity combinations, and the SIM-swap signal only
-works by joining `sim_events.csv` (95% benign decoys) with cash-out bursts.
+How to read it: amount/time columns alone are nearly useless against the
+burst typologies (0/22 commission splits, 2/19 SIM-swaps) — the leak fixes
+did their job. Velocity features recover the bursts; the MoMo schema fields
+close SIM-swap takeovers (the `sim_events.csv` join only works combined
+with burst features, since 95% of events are benign decoys) and add tariff
+and KYC-cap signal; graph topology (directed cycle counts through each
+edge, degrees, PageRank) adds the final margin, most visibly at the strict
+0.1%-FPR operating point (76% → 84%). Slow laundering cycles stay the
+hardest typology at every rung.
 
 ---
 

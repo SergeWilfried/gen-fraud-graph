@@ -8,11 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- `examples/baseline_xgb.py` — tabular XGBoost baseline that reads generated
-  output directly (provenance labels, wallet/KYC joins, SIM-event join,
-  velocity features) and reports PR-AUC, recall@FPR, and per-typology
-  pattern recall; doubles as the benchmark's leak detector. New optional
-  dependency extra: `gen-fraud-graph[baseline]`
+- `examples/baseline_xgb.py` — XGBoost baseline ladder that reads generated
+  output directly (provenance labels, wallet/KYC joins, SIM-event join)
+  and trains one model per cumulative feature tier: bank-style amounts,
+  + velocity, + MoMo schema, + graph topology (degrees, reciprocity,
+  directed 3-/4-cycle counts through each edge, PageRank). Reports PR-AUC,
+  recall@FPR, and per-typology pattern recall per tier; doubles as the
+  benchmark's leak detector. New optional dependency extra:
+  `gen-fraud-graph[baseline]`
 - Legitimate business segment in transaction amounts (`BUSINESS_AMOUNT_PARAMS`)
   so the >1M XOF band is not fraud-dominated
 - Benign decoy SIM-swap events (default 20 per fraudulent swap) with

@@ -1,28 +1,36 @@
 # Copyright (c) 2026 Santander Group
 # SPDX-License-Identifier: Apache-2.0
 
-"""XGBoost tabular baseline for a gen-fraud-graph dataset.
+"""XGBoost baseline ladder for a gen-fraud-graph dataset.
 
-This is the honesty check for the benchmark: a competent per-transaction
-model with velocity features, trained on a generated dataset. It reads the
-generator's output directly — no manual CSV wrangling:
+The benchmark's thesis is that MoMo fraud is detectable through graph
+structure + velocity + the typed schema fields, and never through any
+single column. This script demonstrates it as a ladder of models on the
+same data, one per cumulative feature tier:
 
-    gen-fraud-graph --scale 0.005 --output ./data
-    python examples/baseline_xgb.py --data-dir ./data
+* ``amounts``  — bank-style columns only (amount, time of day)
+* ``velocity`` — + backward-looking per-wallet and per-agent history
+* ``schema``   — + the MoMo fields (tx_type, channel, fees, commissions,
+  account roles, KYC caps, SIM-swap events)
+* ``graph``    — + edge-level topology (degrees, reciprocity, directed
+  3-/4-cycle counts through the edge, PageRank)
+
+The gaps between rungs are the benchmark's selling point; the per-typology
+recall table shows which typology needs which signal. It also doubles as
+the leak detector: a bottom-rung tier scoring near-perfect means the
+generator leaks the label through a trivial column.
 
 Labels are derived from provenance (rows in ``fraud/transactions_fraud.csv``
 are fraud, rows in ``transactions/`` are not); nothing in the feature matrix
-encodes the label directly. If a trivial feature (amount alone, an hour flag)
-tops the importance list with a near-perfect score, the generator has a
-leak — that is exactly what this script exists to catch.
+encodes the label directly. History features look strictly backward in time.
+Graph features are transductive: they use the (label-free) topology of the
+full dataset, the standard setting for graph fraud benchmarks.
 
-Evaluation follows fraud-ops practice:
+Usage::
 
-* temporal split — train on the past, test on the future;
-* PR-AUC and recall at fixed false-positive rates (an operator reviews a
-  bounded alert queue, so recall@FPR is the number that matters);
-* per-typology pattern recall — a pattern counts as caught if at least one
-  of its test-window edges is flagged at the alert threshold.
+    gen-fraud-graph --scale 0.005 --output ./data
+    python examples/baseline_xgb.py --data-dir ./data               # full ladder
+    python examples/baseline_xgb.py --data-dir ./data --tier graph  # one tier, detailed
 
 Requires the ``baseline`` extra: ``pip install 'gen-fraud-graph[baseline]'``.
 """
@@ -32,13 +40,17 @@ from __future__ import annotations
 import argparse
 import glob
 import os
+from collections import defaultdict
 
 import numpy as np
 import pandas as pd
+from scipy.sparse import csr_matrix
 from sklearn.metrics import average_precision_score, roc_curve
 from xgboost import XGBClassifier
 
 from gen_fraud_graph.schema import TIER_TX_CAPS
+
+TIERS = ["amounts", "velocity", "schema", "graph"]
 
 TRAIN_FRACTION = 0.70
 VALID_FRACTION = 0.15  # remainder is the test slice
@@ -114,15 +126,13 @@ def load_dataset(data_dir: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFram
 
 
 # ---------------------------------------------------------------------------
-# Features — behaviour, velocity, and the typed schema fields
+# Feature tiers (cumulative)
 # ---------------------------------------------------------------------------
 
 
-def build_features(df: pd.DataFrame, events: pd.DataFrame) -> pd.DataFrame:
-    f = pd.DataFrame(index=df.index)
+def add_amount_features(f: pd.DataFrame, df: pd.DataFrame) -> None:
+    """Tier 1 — what a bank-style schema exposes: amount and time."""
     ts = df["timestamp"]
-
-    # --- per-row facts ---
     f["log_amount"] = np.log1p(df["amount"])
     f["hour"] = ts.dt.hour
     f["day_of_week"] = ts.dt.dayofweek
@@ -130,21 +140,10 @@ def build_features(df: pd.DataFrame, events: pd.DataFrame) -> pd.DataFrame:
     # Every generated amount is a multiple of 5 XOF, so the classic
     # "round amount" tell only means something at note-sized multiples.
     f["is_round_amount"] = (df["amount"] % 25_000 == 0).astype(int)
-    f["fee"] = df["fee"]
-    f["commission"] = df["commission"]
-    f["fee_rate"] = df["fee"] / df["amount"]
-    f["commission_rate"] = df["commission"] / df["amount"]
 
-    # How close does this transfer sail to the sender's KYC-tier ceiling?
-    # Structuring lives just under these caps.
-    caps = df["src_kyc"].map(TIER_TX_CAPS).fillna(max(TIER_TX_CAPS.values()))
-    f["amount_vs_tier_cap"] = df["amount"] / caps
 
-    # --- categorical one-hots ---
-    for col in ("tx_type", "channel", "src_type", "dst_type", "src_kyc"):
-        f = pd.concat([f, pd.get_dummies(df[col], prefix=col)], axis=1)
-
-    # --- velocity: backward-looking only (no future information) ---
+def add_velocity_features(f: pd.DataFrame, df: pd.DataFrame) -> None:
+    """Tier 2 — backward-looking wallet and agent history (no future info)."""
     for role, col in (("sender", "src_id"), ("receiver", "dst_id")):
         grp = df.groupby(col)
         count_so_far = grp.cumcount()
@@ -168,8 +167,24 @@ def build_features(df: pd.DataFrame, events: pd.DataFrame) -> pd.DataFrame:
     agent_gap = agent_grp["timestamp"].diff().dt.total_seconds()
     f["agent_seconds_since_prev"] = agent_gap.reindex(df.index).fillna(NEW_WALLET_GAP)
 
-    # Seconds since the sender's most recent SIM swap (if any) — the
-    # takeover signal, available by joining fraud/sim_events.csv.
+
+def add_schema_features(f: pd.DataFrame, df: pd.DataFrame, events: pd.DataFrame) -> pd.DataFrame:
+    """Tier 3 — the MoMo schema: types, tariffs, roles, KYC caps, SIM events."""
+    f["fee"] = df["fee"]
+    f["commission"] = df["commission"]
+    f["fee_rate"] = df["fee"] / df["amount"]
+    f["commission_rate"] = df["commission"] / df["amount"]
+
+    # How close does this transfer sail to the sender's KYC-tier ceiling?
+    # Structuring lives just under these caps.
+    caps = df["src_kyc"].map(TIER_TX_CAPS).fillna(max(TIER_TX_CAPS.values()))
+    f["amount_vs_tier_cap"] = df["amount"] / caps
+
+    for col in ("tx_type", "channel", "src_type", "dst_type", "src_kyc"):
+        f = pd.concat([f, pd.get_dummies(df[col], prefix=col)], axis=1)
+
+    # Seconds since the sender's most recent SIM swap (if any). Most events
+    # are benign upgrades, so this only works combined with burst features.
     if len(events):
         ev = events[["account_id", "swap_ts"]].sort_values("swap_ts")
         joined = pd.merge_asof(
@@ -185,10 +200,83 @@ def build_features(df: pd.DataFrame, events: pd.DataFrame) -> pd.DataFrame:
         f["seconds_since_sim_swap"] = delta.reindex(df.index).fillna(NO_SWAP)
     else:
         f["seconds_since_sim_swap"] = NO_SWAP
-
-    f = f.astype(float)
-    print(f"Built {f.shape[1]} features")
     return f
+
+
+def add_graph_features(f: pd.DataFrame, df: pd.DataFrame) -> None:
+    """Tier 4 — edge-level topology of the (label-free) transaction graph.
+
+    Laundering rings are directed cycles: the count of short directed
+    cycles closing through an edge, and how connected its endpoints are,
+    are signals no per-row model can see.
+    """
+    out_sets: dict[str, set[str]] = defaultdict(set)
+    in_sets: dict[str, set[str]] = defaultdict(set)
+    pairs = df[["src_id", "dst_id"]].drop_duplicates()
+    for u, v in pairs.itertuples(index=False):
+        out_sets[u].add(v)
+        in_sets[v].add(u)
+
+    f["src_out_degree"] = df["src_id"].map(lambda a: len(out_sets[a])).astype(float)
+    f["src_in_degree"] = df["src_id"].map(lambda a: len(in_sets[a])).astype(float)
+    f["dst_out_degree"] = df["dst_id"].map(lambda a: len(out_sets[a])).astype(float)
+    f["dst_in_degree"] = df["dst_id"].map(lambda a: len(in_sets[a])).astype(float)
+
+    # Cycle participation through this edge (u -> v):
+    #   reciprocal: v pays u back directly (2-cycle)
+    #   cycles3:    v pays someone who pays u
+    #   cycles4:    value returns to u two hops after v
+    two_hop_out: dict[str, set[str]] = {}
+
+    def out2(node: str) -> set[str]:
+        cached = two_hop_out.get(node)
+        if cached is None:
+            cached = set()
+            for w in out_sets[node]:
+                cached |= out_sets[w]
+            two_hop_out[node] = cached
+        return cached
+
+    recip, cyc3, cyc4, common = [], [], [], []
+    for u, v in df[["src_id", "dst_id"]].itertuples(index=False):
+        recip.append(1.0 if u in out_sets[v] else 0.0)
+        cyc3.append(float(len(out_sets[v] & in_sets[u])))
+        cyc4.append(float(len(out2(v) & in_sets[u])))
+        common.append(float(len((out_sets[u] | in_sets[u]) & (out_sets[v] | in_sets[v]))))
+    f["pair_reciprocal"] = recip
+    f["cycles3_through_edge"] = cyc3
+    f["cycles4_through_edge"] = cyc4
+    f["common_neighbours"] = common
+
+    # PageRank by power iteration on the unique-pair adjacency.
+    nodes = sorted(out_sets.keys() | in_sets.keys())
+    idx = {a: i for i, a in enumerate(nodes)}
+    n = len(nodes)
+    rows = [idx[u] for u, v in pairs.itertuples(index=False)]
+    cols = [idx[v] for u, v in pairs.itertuples(index=False)]
+    adj = csr_matrix((np.ones(len(rows)), (rows, cols)), shape=(n, n))
+    out_deg = np.asarray(adj.sum(axis=1)).ravel()
+    transition = csr_matrix(adj.multiply(1.0 / np.maximum(out_deg, 1.0)[:, None]))
+    rank = np.full(n, 1.0 / n)
+    for _ in range(30):
+        rank = 0.15 / n + 0.85 * (transition.T @ rank)
+    pagerank = dict(zip(nodes, rank * n, strict=True))
+    f["src_pagerank"] = df["src_id"].map(pagerank).astype(float)
+    f["dst_pagerank"] = df["dst_id"].map(pagerank).astype(float)
+
+
+def build_features(df: pd.DataFrame, events: pd.DataFrame, tier: str) -> pd.DataFrame:
+    """Build the cumulative feature matrix up to ``tier``."""
+    level = TIERS.index(tier)
+    f = pd.DataFrame(index=df.index)
+    add_amount_features(f, df)
+    if level >= 1:
+        add_velocity_features(f, df)
+    if level >= 2:
+        f = add_schema_features(f, df, events)
+    if level >= 3:
+        add_graph_features(f, df)
+    return f.astype(float)
 
 
 # ---------------------------------------------------------------------------
@@ -221,10 +309,6 @@ def train(x: pd.DataFrame, y: pd.Series, sl_train: slice, sl_valid: slice) -> XG
         eval_set=[(x.iloc[sl_valid], y.iloc[sl_valid])],
         verbose=False,
     )
-    print(
-        f"Trained on {sl_train.stop:,} rows ({n_fraud:,} fraud); "
-        f"{model.best_iteration + 1} trees"
-    )
     return model
 
 
@@ -241,38 +325,26 @@ def threshold_at_fpr(y_true: pd.Series, y_score: np.ndarray, target_fpr: float) 
     return float(thresholds[ok[-1]]) if len(ok) else float("inf")
 
 
-def evaluate(name: str, y_true: pd.Series, y_score: np.ndarray) -> None:
-    pr_auc = average_precision_score(y_true, y_score)
-    print(f"\n--- {name} ---")
-    print(f"PR-AUC:                  {pr_auc:.3f}  (random ~{y_true.mean():.4f})")
-    print(f"Fraud caught @ 1%   FPR: {recall_at_fpr(y_true, y_score, 0.01):.1%}")
-    print(f"Fraud caught @ 0.1% FPR: {recall_at_fpr(y_true, y_score, 0.001):.1%}")
-
-
 def pattern_recall(
     df: pd.DataFrame,
     cases: pd.DataFrame,
     sl_test: slice,
     scores: np.ndarray,
     threshold: float,
-) -> None:
+) -> dict[str, tuple[int, int]]:
     """Per-typology recall: a pattern is caught if any of its edges inside
     the test slice is flagged at the alert threshold."""
     test = df.iloc[sl_test].copy()
     test["flagged"] = scores >= threshold
     flagged = test[test["flagged"] & (test["is_fraud"] == 1)]
     test_fraud = test[test["is_fraud"] == 1]
-    test_start = test["timestamp"].min()
 
-    print("\n--- Per-typology pattern recall (test slice, alert threshold from validation) ---")
-    print(f"{'pattern_type':<22} {'caught':>6} / {'in-test':>7}")
+    result: dict[str, tuple[int, int]] = {}
     for ptype, group in cases.groupby("pattern_type"):
         caught = evaluable = 0
         for _, case in group.iterrows():
             w_start = pd.Timestamp(case["window_start"])
             w_end = pd.Timestamp(case["window_end"])
-            if w_end < test_start:
-                continue  # pattern finished before the test window
             involved = set(case["involved_accounts"].split("|"))
 
             def in_pattern(rows: pd.DataFrame, acc: set = involved, lo=w_start, hi=w_end) -> bool:
@@ -289,7 +361,69 @@ def pattern_recall(
             if in_pattern(flagged):
                 caught += 1
         if evaluable:
-            print(f"{ptype:<22} {caught:>6} / {evaluable:>7}  ({caught / evaluable:.0%})")
+            result[str(ptype)] = (caught, evaluable)
+    return result
+
+
+def run_tier(
+    tier: str,
+    df: pd.DataFrame,
+    cases: pd.DataFrame,
+    events: pd.DataFrame,
+    verbose: bool = False,
+) -> dict:
+    """Train and evaluate one cumulative feature tier."""
+    features = build_features(df, events, tier)
+    y = df["is_fraud"]
+    sl_train, sl_valid, sl_test = temporal_split(len(df))
+
+    model = train(features, y, sl_train, sl_valid)
+    valid_scores = model.predict_proba(features.iloc[sl_valid])[:, 1]
+    test_scores = model.predict_proba(features.iloc[sl_test])[:, 1]
+
+    threshold = threshold_at_fpr(y.iloc[sl_valid], valid_scores, 0.01)
+    result = {
+        "tier": tier,
+        "n_features": features.shape[1],
+        "pr_auc": average_precision_score(y.iloc[sl_test], test_scores),
+        "recall_1pct": recall_at_fpr(y.iloc[sl_test], test_scores, 0.01),
+        "recall_01pct": recall_at_fpr(y.iloc[sl_test], test_scores, 0.001),
+        "patterns": pattern_recall(df, cases, sl_test, test_scores, threshold),
+    }
+
+    if verbose:
+        print(f"\n--- Tier '{tier}' ({result['n_features']} features) — test slice ---")
+        print(f"PR-AUC:                  {result['pr_auc']:.3f}")
+        print(f"Fraud caught @ 1%   FPR: {result['recall_1pct']:.1%}")
+        print(f"Fraud caught @ 0.1% FPR: {result['recall_01pct']:.1%}")
+        print("\nPer-typology pattern recall (alert threshold from validation):")
+        for ptype, (caught, total) in sorted(result["patterns"].items()):
+            print(f"  {ptype:<22} {caught:>3} / {total:<3} ({caught / total:.0%})")
+        imp = pd.Series(model.feature_importances_, index=features.columns).sort_values(
+            ascending=False
+        )
+        print("\nTop 15 features by importance:")
+        for name, val in imp.head(15).items():
+            print(f"  {name:38s} {val:.3f}")
+    return result
+
+
+def print_ladder(results: list[dict]) -> None:
+    typologies = sorted({p for r in results for p in r["patterns"]})
+    print("\n=== Baseline ladder (test slice) ===")
+    header = f"{'tier':<10} {'feats':>5} {'PR-AUC':>7} {'R@1%':>6} {'R@0.1%':>7}"
+    for t in typologies:
+        header += f"  {t[:9]:>9}"
+    print(header)
+    for r in results:
+        line = (
+            f"{r['tier']:<10} {r['n_features']:>5} {r['pr_auc']:>7.3f} "
+            f"{r['recall_1pct']:>6.1%} {r['recall_01pct']:>7.1%}"
+        )
+        for t in typologies:
+            caught, total = r["patterns"].get(t, (0, 0))
+            line += f"  {f'{caught}/{total}':>9}"
+        print(line)
 
 
 # ---------------------------------------------------------------------------
@@ -300,33 +434,21 @@ def pattern_recall(
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--data-dir", required=True, help="gen-fraud-graph output directory")
-    ap.add_argument("--model-out", default="", help="optional path to save the model (json)")
+    ap.add_argument(
+        "--tier",
+        choices=TIERS,
+        default=None,
+        help="run a single cumulative tier with detailed output (default: full ladder)",
+    )
     args = ap.parse_args()
 
     df, cases, events = load_dataset(args.data_dir)
-    features = build_features(df, events)
-    y = df["is_fraud"]
 
-    sl_train, sl_valid, sl_test = temporal_split(len(df))
-    model = train(features, y, sl_train, sl_valid)
-
-    valid_scores = model.predict_proba(features.iloc[sl_valid])[:, 1]
-    test_scores = model.predict_proba(features.iloc[sl_test])[:, 1]
-
-    evaluate("VALIDATION (seen during early stopping)", y.iloc[sl_valid], valid_scores)
-    evaluate("TEST (future data, never seen)", y.iloc[sl_test], test_scores)
-
-    threshold = threshold_at_fpr(y.iloc[sl_valid], valid_scores, 0.01)
-    pattern_recall(df, cases, sl_test, test_scores, threshold)
-
-    imp = pd.Series(model.feature_importances_, index=features.columns).sort_values(ascending=False)
-    print("\nTop 15 features by importance (sanity-check against fraud intuition):")
-    for name, val in imp.head(15).items():
-        print(f"  {name:38s} {val:.3f}")
-
-    if args.model_out:
-        model.save_model(args.model_out)
-        print(f"\nModel saved to {args.model_out}")
+    if args.tier:
+        run_tier(args.tier, df, cases, events, verbose=True)
+    else:
+        results = [run_tier(tier, df, cases, events) for tier in TIERS]
+        print_ladder(results)
 
 
 if __name__ == "__main__":
