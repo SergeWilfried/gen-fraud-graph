@@ -103,6 +103,7 @@ gen-fraud-graph --scale 1.0 --workers 24 --skip-accounts --output ./data
 | `--workers` | `1` | Number of parallel worker processes. |
 | `--batches` | `1` | Number of file chunks per worker. |
 | `--format` | `csv` | Output format: `csv` (generic) or `neptune` (AWS Neptune bulk-load). |
+| `--preset` | none | Canonical benchmark preset (`momo-100k`, `momo-1m`, `momo-10m`) — pins scale, seed, workers, and fraud counts for byte-identical regeneration. |
 | `--seed` | none | Master seed for byte-identical reproducible output (same seed + same config = same files). |
 | `--fraud-rings` | auto | Number of fraud rings. Default: auto-scaled from `--scale`. |
 | `--trade-based-ml-patterns` | auto | Number of TBML patterns. Default: auto-scaled from `--scale`. |
@@ -154,19 +155,17 @@ python examples/baseline_xgb.py --data-dir ./data              # full ladder
 python examples/baseline_xgb.py --data-dir ./data --tier graph # one tier, detailed
 ```
 
-Reference ladder on a 455K-transaction dataset (50K wallets, 730 injected
-patterns, ~1% fraud edges). Generation is seedable (`--seed`) — pin a seed
-to reproduce a dataset exactly; the table below was produced without one,
-so expect run-to-run variation of a few points. Metrics are on the test
-slice of a temporal split; the right-hand columns are per-typology pattern
-recall at a 1%-FPR alert threshold:
+Canonical ladder on the `momo-100k` preset (see below — anyone can
+regenerate this exact dataset). Metrics are on the test slice of a
+temporal split; the right-hand columns are per-typology pattern recall at
+a 1%-FPR alert threshold:
 
 | Tier | PR-AUC | R@1% FPR | R@0.1% FPR | Commission splits | SIM-swap | Mule chains | Cycles |
 |:---|---:|---:|---:|---:|---:|---:|---:|
-| `amounts` (bank-style) | 0.23 | 37% | 13% | 0/22 | 2/19 | 10/10 | 11/12 |
-| `velocity` | 0.76 | 79% | 61% | 22/22 | 17/19 | 9/10 | 11/12 |
-| `schema` (MoMo fields) | 0.88 | 91% | 76% | 22/22 | 19/19 | 10/10 | 11/12 |
-| `graph` (topology) | 0.91 | 93% | 84% | 22/22 | 19/19 | 10/10 | 11/12 |
+| `amounts` (bank-style) | 0.19 | 32% | 11% | 0/41 | 1/39 | 19/22 | 28/37 |
+| `velocity` | 0.77 | 81% | 63% | 41/41 | 37/39 | 21/22 | 35/37 |
+| `schema` (MoMo fields) | 0.86 | 89% | 75% | 41/41 | 39/39 | 22/22 | 34/37 |
+| `graph` (topology) | 0.88 | 91% | 79% | 41/41 | 38/39 | 22/22 | 35/37 |
 
 How to read it: amount/time columns alone are nearly useless against the
 burst typologies (0/22 commission splits, 2/19 SIM-swaps) — the leak fixes
@@ -177,6 +176,31 @@ and KYC-cap signal; graph topology (directed cycle counts through each
 edge, degrees, PageRank) adds the final margin, most visibly at the strict
 0.1%-FPR operating point (76% → 84%). Slow laundering cycles stay the
 hardest typology at every rung.
+
+### Canonical Presets
+
+A preset is a dataset as code: it pins scale, master seed, worker/chunk
+layout, embedding dimensionality, and fraud pattern counts (~1% fraud
+edges), so the same preset regenerates byte-identical files on any
+machine — no multi-gigabyte artifacts to host.
+
+```bash
+gen-fraud-graph --preset momo-100k --output ./momo-100k
+# verify your copy matches the canonical bytes:
+cd momo-100k && shasum -a 256 -c ../presets/momo-100k.sha256
+```
+
+| Preset | Wallets | Transactions | Fraud patterns | Seed | Approx. size |
+|:---|---:|---:|---:|---:|---:|
+| `momo-100k` | 100K | 900K | 1,460 | 100001 | ~660 MB |
+| `momo-1m` | 1M | 9M | 14,600 | 1000001 | ~6.6 GB |
+| `momo-10m` | 10M | 90M | 146,000 | 10000001 | ~66 GB |
+
+`presets/momo-100k.sha256` is the committed manifest for the small preset;
+the larger two share the same definition mechanism and pattern mix (counts
+scale linearly, so the fraud rate stays comparable). Only `--output`,
+`--format`, and `--compress` may be combined with `--preset` — everything
+else is part of the preset's identity.
 
 ---
 
