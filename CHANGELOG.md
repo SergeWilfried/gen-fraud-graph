@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Typology gallery: `examples/plot_typologies.py` renders injected
+  patterns from a generated dataset as static PNGs — each pattern shown
+  inside its 1-hop neighbourhood of legitimate traffic, with role-coloured
+  nodes, per-edge timing offsets, and the SIM-swap event annotation.
+  Four canonical images from the `momo-100k` preset live in
+  `docs/images/`. New optional dependency extra: `gen-fraud-graph[viz]`
 - Canonical benchmark presets (`--preset momo-100k|momo-1m|momo-10m`,
   `gen_fraud_graph.presets`): datasets as code — each pins scale, seed,
   worker layout, embedding dim, and fraud pattern counts (~1% fraud) for
