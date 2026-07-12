@@ -376,7 +376,7 @@ def sample_lognormal_xof(
     return round_xof(min(max(amount, lo), hi))
 
 
-# Per-type log-normal (median, sigma) for legitimate traffic.
+# Per-type log-normal (median, sigma) for retail traffic.
 AMOUNT_PARAMS: dict[str, tuple[int, float]] = {
     "cash_in": (25_000, 1.0),
     "cash_out": (30_000, 1.0),
@@ -387,8 +387,24 @@ AMOUNT_PARAMS: dict[str, tuple[int, float]] = {
     "bank_to_wallet": (150_000, 1.3),
 }
 
+# Business segment: a small share of legitimate traffic (traders, informal
+# import/export, payroll) moves large sums. Without it the >1M XOF band
+# would be fraud-dominated and a plain amount threshold would separate the
+# laundering typologies — the tabular baseline caught exactly that.
+# tx_type -> (mixture probability, median, sigma)
+BUSINESS_AMOUNT_PARAMS: dict[str, tuple[float, int, float]] = {
+    "p2p": (0.03, 1_500_000, 0.9),
+    "bank_to_wallet": (0.10, 2_500_000, 0.9),
+    "cash_in": (0.02, 900_000, 0.8),
+    "cash_out": (0.02, 900_000, 0.8),
+    "merchant_payment": (0.02, 400_000, 0.9),
+}
+
 
 def sample_amount(rng: random.Random, tx_type: str) -> int:
+    business = BUSINESS_AMOUNT_PARAMS.get(tx_type)
+    if business is not None and rng.random() < business[0]:
+        return sample_lognormal_xof(rng, business[1], business[2])
     median, sigma = AMOUNT_PARAMS[tx_type]
     return sample_lognormal_xof(rng, median, sigma)
 

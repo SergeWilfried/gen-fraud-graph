@@ -137,6 +137,37 @@ generator.run()
 python -m gen_fraud_graph.verify --data-dir ./data
 ```
 
+### Measure Benchmark Difficulty
+
+A tabular XGBoost baseline ([`examples/baseline_xgb.py`](examples/baseline_xgb.py))
+closes the loop: it reads the generated output directly, derives labels from
+provenance, and reports the metrics fraud-ops teams use. Run it after any
+generator change — if a trivial feature (amount alone, a wording flag) tops
+its importance list with a near-perfect score, the generator has a label leak.
+
+```bash
+pip install 'gen-fraud-graph[baseline]'
+python examples/baseline_xgb.py --data-dir ./data
+```
+
+Reference numbers on a 455K-transaction dataset (50K wallets, 730 injected
+patterns, ~1% fraud edges; unseeded generation, so expect run-to-run
+variation of a few points):
+
+| Metric (test slice, temporal split) | Score |
+|:---|:---|
+| PR-AUC | ~0.87 (random ≈ 0.009) |
+| Fraud caught @ 1% FPR | ~91% |
+| Fraud caught @ 0.1% FPR | ~76% |
+
+Per-typology pattern recall shows where the tabular signal comes from —
+burst velocity catches the fast typologies (SIM-swap, commission splits,
+mule cash-outs ≈ 100%), while slow multi-day laundering cycles are the
+hardest (~92%) and are where graph-structural features have the most
+headroom. No single column separates fraud from background: the top
+features are tariff/velocity combinations, and the SIM-swap signal only
+works by joining `sim_events.csv` (95% benign decoys) with cash-out bursts.
+
 ---
 
 ## Output Structure

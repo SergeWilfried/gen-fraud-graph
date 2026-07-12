@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `examples/baseline_xgb.py` — tabular XGBoost baseline that reads generated
+  output directly (provenance labels, wallet/KYC joins, SIM-event join,
+  velocity features) and reports PR-AUC, recall@FPR, and per-typology
+  pattern recall; doubles as the benchmark's leak detector. New optional
+  dependency extra: `gen-fraud-graph[baseline]`
+- Legitimate business segment in transaction amounts (`BUSINESS_AMOUNT_PARAMS`)
+  so the >1M XOF band is not fraud-dominated
+- Benign decoy SIM-swap events (default 20 per fraudulent swap) with
+  uniform, unlabeled event IDs — the presence of a `sim_events.csv` row no
+  longer identifies a takeover
 - Mobile-money schema (`schema.py`, single source of truth for CSV specs):
   wallet nodes carry `msisdn`, `account_type` (customer/agent/super-agent/
   merchant/aggregator), `kyc_tier`, `sim_id`, `device_id`,

@@ -58,8 +58,13 @@ dev = [
     "mypy>=1.0",
     "coverage>=7.0",
 ]
+baseline = [
+    "xgboost>=2.0",
+    "pandas>=2.0",
+    "scikit-learn>=1.3",
+]
 all = [
-    "gen-fraud-graph[local,openai,dev]",
+    "gen-fraud-graph[local,openai,dev,baseline]",
 ]
 
 [project.urls]

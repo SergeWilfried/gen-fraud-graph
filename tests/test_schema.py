@@ -203,19 +203,24 @@ class TestSimSwapEvents:
             if c["pattern_type"] == "sim_swap_takeover"
         ]
         assert events
-        assert len(events) == len(cases)
+        # Benign decoy swaps outnumber the fraudulent ones, and every row —
+        # fraud or decoy — must be internally consistent and unlabeled.
+        assert len(events) > len(cases)
         for ev in events:
             uid = int(ev["account_id"].removeprefix("acc_"))
             assert ev["msisdn"] == msisdn_for(uid)
             assert ev["old_sim_id"] == sim_id_for(uid)
             assert ev["new_sim_id"] != ev["old_sim_id"]
-            # The swap precedes the cash-out burst it enables.
-            swap = datetime.strptime(ev["swap_ts"], TS_FMT)
-            assert any(
-                c["start_acc_id"] == ev["account_id"]
-                and swap < datetime.strptime(c["window_start"], TS_FMT)
-                for c in cases
+            assert "swap" not in ev["new_sim_id"]  # naming must not label
+        # Every takeover pattern is preceded by a swap on its victim.
+        by_account: dict[str, list[datetime]] = {}
+        for ev in events:
+            by_account.setdefault(ev["account_id"], []).append(
+                datetime.strptime(ev["swap_ts"], TS_FMT)
             )
+        for case in cases:
+            burst_start = datetime.strptime(case["window_start"], TS_FMT)
+            assert any(t < burst_start for t in by_account.get(case["start_acc_id"], []))
 
     def test_fraud_agent_roles_are_real(self, small_config):
         """SIM-swap cash-outs must fan out to agent-typed wallets — the

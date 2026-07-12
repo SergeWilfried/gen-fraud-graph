@@ -851,6 +851,9 @@ class SIMSwapFraudGenerator:
             each cash-out edge. Defaults to ``0.05`` (±5%).
         burst_window_minutes: Max minutes between the first and last
             cash-out transaction in a pattern. Defaults to ``10``.
+        benign_events_per_fraud: Ordinary phone-upgrade SIM swaps emitted
+            into ``sim_events.csv`` per fraudulent one, so the presence of
+            an event does not label the takeover. Defaults to ``20``.
     """
 
     num_patterns: int = 100
@@ -858,6 +861,7 @@ class SIMSwapFraudGenerator:
     amount_range: tuple[int, int] = (20_000, 300_000)
     amount_jitter: float = 0.05
     burst_window_minutes: int = 10
+    benign_events_per_fraud: int = 20
     sim_start_date: str = "2024-01-01"
     sim_days: int = 90
 
@@ -927,18 +931,12 @@ class SIMSwapFraudGenerator:
             last_offset = 0
 
             # The takeover event itself: same msisdn and wallet, new SIM,
-            # minutes before the first cash-out.
+            # minutes before the first cash-out. IDs are assigned after the
+            # benign decoys are mixed in, so nothing in the row identifies
+            # the fraudulent swaps.
             swap_ts = base_ts - timedelta(minutes=random.randint(2, 90))
-            new_sim = f"sim_swapped_{start_tx_id}_{pattern_id}"
             event_rows.append(
-                [
-                    f"simswap_ev_{start_tx_id}_{pattern_id}",
-                    victim,
-                    msisdn_for(victim_uid),
-                    sim_id_for(victim_uid),
-                    new_sim,
-                    iso_ts(swap_ts),
-                ]
+                ["", victim, msisdn_for(victim_uid), sim_id_for(victim_uid), "", iso_ts(swap_ts)]
             )
 
             batch_texts: list[str] = []
@@ -981,6 +979,22 @@ class SIMSwapFraudGenerator:
                     iso_ts(base_ts + timedelta(seconds=last_offset)),
                 ]
             )
+
+        # Benign decoy swaps: most SIM re-bindings are ordinary phone or
+        # SIM upgrades. Without them the mere existence of a sim_events row
+        # would label the takeovers (the tabular baseline exploited that).
+        n_benign = len(event_rows) * self.benign_events_per_fraud
+        for _ in range(n_benign):
+            uid = random_customer_uid(max_account_id, _RNG)
+            ts = random_timestamp(_RNG, sim_start, self.sim_days)
+            event_rows.append(["", f"acc_{uid}", msisdn_for(uid), sim_id_for(uid), "", iso_ts(ts)])
+
+        # Shuffle fraud and benign together, then assign uniform ids and
+        # replacement-SIM serials so row order and naming carry no label.
+        random.shuffle(event_rows)
+        for k, ev in enumerate(event_rows):
+            ev[0] = f"simev_{start_tx_id}_{k}"
+            ev[4] = f"sim_r{start_tx_id}_{k:06d}"
 
         file_tx = os.path.join(fraud_dir, "transactions_fraud")
         file_cases = os.path.join(fraud_dir, "fraud_cases")
