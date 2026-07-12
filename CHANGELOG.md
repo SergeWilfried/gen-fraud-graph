@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Canonical benchmark presets (`--preset momo-100k|momo-1m|momo-10m`,
+  `gen_fraud_graph.presets`): datasets as code — each pins scale, seed,
+  worker layout, embedding dim, and fraud pattern counts (~1% fraud) for
+  byte-identical regeneration on any machine. `presets/momo-100k.sha256`
+  is the committed content manifest; the README carries the canonical
+  baseline-ladder numbers for `momo-100k`
 - Reproducible generation: `Config(seed=...)` / `--seed` makes every output
   file byte-identical across runs of the same configuration. The master
   seed derives independent child streams for account workers, transaction

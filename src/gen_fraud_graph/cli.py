@@ -6,10 +6,12 @@
 from __future__ import annotations
 
 import argparse
+import sys
 
 from gen_fraud_graph import __version__
 from gen_fraud_graph.config import Config
 from gen_fraud_graph.generator import FraudGraphGenerator
+from gen_fraud_graph.presets import PRESETS, preset_config
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -22,6 +24,17 @@ def main(argv: list[str] | None = None) -> None:
         "--version",
         action="version",
         version=f"%(prog)s {__version__}",
+    )
+    parser.add_argument(
+        "--preset",
+        type=str,
+        default=None,
+        choices=sorted(PRESETS),
+        help=(
+            "Canonical benchmark preset (pins scale, seed, workers, embedding, and "
+            "fraud pattern counts for byte-identical regeneration). "
+            "Only --output, --format, and --compress may be combined with it."
+        ),
     )
     parser.add_argument(
         "--scale",
@@ -117,6 +130,34 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     args = parser.parse_args(argv)
+
+    if args.preset:
+        # A preset is a content identity: every data-shape flag is pinned.
+        pinned = {
+            "--scale": (args.scale, 1.0),
+            "--seed": (args.seed, None),
+            "--workers": (args.workers, 1),
+            "--batches": (args.batches, 1),
+            "--provider": (args.provider, "fake"),
+            "--fraud-rings": (args.fraud_rings, None),
+            "--mobile-money-patterns": (args.mobile_money_patterns, None),
+            "--trade-based-ml-patterns": (args.trade_based_ml_patterns, None),
+            "--hawala-patterns": (args.hawala_patterns, None),
+            "--sim-swap-patterns": (args.sim_swap_patterns, None),
+            "--overdraft-mule-patterns": (args.overdraft_mule_patterns, None),
+        }
+        overridden = [flag for flag, (value, default) in pinned.items() if value != default]
+        if overridden:
+            parser.error(f"--preset pins {', '.join(overridden)}; drop the flag(s) or the preset")
+        cfg = preset_config(
+            args.preset,
+            output_dir=args.output,
+            output_format=args.format,
+            compress=args.compress,
+        )
+        generator = FraudGraphGenerator(cfg)
+        generator.run(skip_accounts=args.skip_accounts)
+        sys.exit(0)
 
     cfg = Config(
         scale_factor=args.scale,
