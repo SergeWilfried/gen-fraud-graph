@@ -23,17 +23,21 @@ class EmbeddingGenerator:
     Args:
         provider: One of ``"fake"``, ``"local"``, ``"openai"``.
         dim: Embedding dimensionality (used by *fake* and *openai*).
+        seed: Seed for the *fake* provider's random vectors. ``None`` (the
+            default) draws fresh entropy on every run.
     """
 
     def __init__(
         self,
         provider: Literal["fake", "local", "openai"] = "fake",
         dim: int = 768,
+        seed: int | None = None,
     ) -> None:
         self.provider = provider
         self.dim = dim
         self._model = None
         self._client = None
+        self._rng = np.random.default_rng(seed)
 
         if provider == "local":
             try:
@@ -77,7 +81,7 @@ class EmbeddingGenerator:
             return []
 
         if self.provider == "fake":
-            return np.random.rand(len(texts), self.dim).astype("float32")
+            return self._rng.random((len(texts), self.dim)).astype("float32")
 
         if self.provider == "local":
             return self._model.encode(texts)  # type: ignore[no-any-return,union-attr]

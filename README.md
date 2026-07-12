@@ -21,14 +21,14 @@
 **gen_fraud_graph** is an open-source Python tool that generates massive synthetic financial transaction graphs with injected fraud patterns and optional vector embeddings. It produces CSV datasets ready for ingestion into graph databases (TigerGraph, Neptune, Neo4j, JanusGraph) or for training graph neural networks (GNN).
 
 The generator creates three types of data:
-- **Account nodes** — synthetic customer accounts with balance, risk score, and optional embedding vectors
-- **Transaction edges** — normal financial transactions between accounts
-- **Fraud rings** — cyclic money-laundering patterns with suspicious transaction descriptions
+- **Wallet nodes** — synthetic mobile-money wallets (customer/agent/merchant hierarchy) with MSISDN, SIM and device identity, KYC tier, balances, and optional embedding vectors
+- **Transaction edges** — typed mobile-money transactions (cash-in/out, P2P, merchant, airtime, bill pay, bank-to-wallet) with channel, fees, and agent commissions
+- **Fraud typologies** — cyclic money-laundering rings, structuring/smurfing, mobile money agent-commission fraud, trade-based money laundering (TBML), hawala/informal value transfer networks, SIM-swap account takeover, and overdraft/micro-loan mule chains
 
 ### Key Features
 
 - **Massive scale** — Generate from 1K to 100M+ accounts with configurable scale factor
-- **Fraud pattern injection** — Cyclic money-laundering rings with configurable depth (4–7 hops)
+- **Fraud pattern injection** — Cyclic money-laundering rings (4–7 hops), structuring, mobile money splits, TBML layering chains, hawala corridors, SIM-swap takeover cascades, and micro-loan mule chains
 - **Parallel generation** — Multi-process workers for fast generation on high-core machines
 - **Vector embeddings** — Three providers: `fake` (random, fast), `local` (SentenceTransformers), `openai` (API)
 - **Multiple formats** — Generic CSV or AWS Neptune bulk-load format
@@ -103,7 +103,12 @@ gen-fraud-graph --scale 1.0 --workers 24 --skip-accounts --output ./data
 | `--workers` | `1` | Number of parallel worker processes. |
 | `--batches` | `1` | Number of file chunks per worker. |
 | `--format` | `csv` | Output format: `csv` (generic) or `neptune` (AWS Neptune bulk-load). |
+| `--seed` | none | Master seed for byte-identical reproducible output (same seed + same config = same files). |
 | `--fraud-rings` | auto | Number of fraud rings. Default: auto-scaled from `--scale`. |
+| `--trade-based-ml-patterns` | auto | Number of TBML patterns. Default: auto-scaled from `--scale`. |
+| `--hawala-patterns` | auto | Number of hawala network patterns. Default: auto-scaled from `--scale`. |
+| `--sim-swap-patterns` | auto | Number of SIM-swap account takeover patterns. Default: auto-scaled from `--scale`. |
+| `--overdraft-mule-patterns` | auto | Number of overdraft/micro-loan mule chain patterns. Default: auto-scaled from `--scale`. |
 | `--compress` | off | ZIP-compress output CSV files. |
 | `--skip-accounts` | off | Skip account generation (useful when resuming). |
 
@@ -133,6 +138,46 @@ generator.run()
 python -m gen_fraud_graph.verify --data-dir ./data
 ```
 
+### Measure Benchmark Difficulty
+
+A baseline ladder ([`examples/baseline_xgb.py`](examples/baseline_xgb.py))
+closes the loop: it reads the generated output directly, derives labels from
+provenance, and trains one XGBoost model per cumulative feature tier —
+bank-style columns, + velocity, + the MoMo schema, + graph topology. The
+gaps between rungs are the point: they show that no single column solves
+the benchmark and quantify what each signal layer is worth. Run it after
+any generator change — a near-perfect bottom rung means a label leak.
+
+```bash
+pip install 'gen-fraud-graph[baseline]'
+python examples/baseline_xgb.py --data-dir ./data              # full ladder
+python examples/baseline_xgb.py --data-dir ./data --tier graph # one tier, detailed
+```
+
+Reference ladder on a 455K-transaction dataset (50K wallets, 730 injected
+patterns, ~1% fraud edges). Generation is seedable (`--seed`) — pin a seed
+to reproduce a dataset exactly; the table below was produced without one,
+so expect run-to-run variation of a few points. Metrics are on the test
+slice of a temporal split; the right-hand columns are per-typology pattern
+recall at a 1%-FPR alert threshold:
+
+| Tier | PR-AUC | R@1% FPR | R@0.1% FPR | Commission splits | SIM-swap | Mule chains | Cycles |
+|:---|---:|---:|---:|---:|---:|---:|---:|
+| `amounts` (bank-style) | 0.23 | 37% | 13% | 0/22 | 2/19 | 10/10 | 11/12 |
+| `velocity` | 0.76 | 79% | 61% | 22/22 | 17/19 | 9/10 | 11/12 |
+| `schema` (MoMo fields) | 0.88 | 91% | 76% | 22/22 | 19/19 | 10/10 | 11/12 |
+| `graph` (topology) | 0.91 | 93% | 84% | 22/22 | 19/19 | 10/10 | 11/12 |
+
+How to read it: amount/time columns alone are nearly useless against the
+burst typologies (0/22 commission splits, 2/19 SIM-swaps) — the leak fixes
+did their job. Velocity features recover the bursts; the MoMo schema fields
+close SIM-swap takeovers (the `sim_events.csv` join only works combined
+with burst features, since 95% of events are benign decoys) and add tariff
+and KYC-cap signal; graph topology (directed cycle counts through each
+edge, degrees, PageRank) adds the final margin, most visibly at the strict
+0.1%-FPR operating point (76% → 84%). Slow laundering cycles stay the
+hardest typology at every rung.
+
 ---
 
 ## Output Structure
@@ -146,43 +191,77 @@ data/
 │   ├── transactions_0_0.csv   # Transaction edges (worker 0, batch 0)
 │   └── transactions_1_0.csv   # Transaction edges (worker 1, batch 0)
 └── fraud/
-    ├── transactions_fraud.csv  # Fraud ring transaction edges
-    └── fraud_cases.csv         # Fraud ring metadata (pattern_id, accounts, depth)
+    ├── transactions_fraud.csv  # Injected fraud transaction edges (all typologies)
+    ├── fraud_cases.csv         # Ground truth (pattern type, accounts, time window)
+    └── sim_events.csv          # SIM re-binding events behind SIM-swap takeovers
 ```
 
 ### CSV Schema
 
-**accounts** (`accounts_*.csv`)
+**accounts** (`accounts_*.csv`) — mobile-money wallets
 
 | Column | Type | Description |
 |:---|:---|:---|
-| `account_id` | string | Unique account identifier (`acc_0`, `acc_1`, ...) |
+| `account_id` | string | Wallet identifier and edge join key (`acc_0`, `acc_1`, ...) |
+| `msisdn` | string | Subscriber phone number (`+2217...`), unique per wallet |
 | `customer_name` | string | Synthetic customer name |
-| `balance` | float | Account balance (100 – 100,000) |
+| `account_type` | string | `customer`, `agent`, `super_agent`, `merchant`, or `aggregator` — deterministic in the account ID (see `schema.py`) |
+| `kyc_tier` | string | `unverified`, `light`, or `full` (BCEAO-style tiers; agent-side and business wallets are always `full`) |
+| `sim_id` | string | SIM originally bound to the wallet (SIM swaps re-bind it via `sim_events.csv`) |
+| `device_id` | string | Handset identifier; a small share of wallets share a household device |
+| `registration_agent_id` | string | Agent that onboarded the wallet (empty for agent-side wallets) |
+| `zone` | string | Coarse geography (region/district), urban-weighted |
+| `balance` | int | Wallet balance in XOF (log-normal by account type) |
+| `float_balance` | int | Agent e-float in XOF; `0` for non-agent wallets |
 | `risk_score` | float | Risk score (0.0 – 1.0) |
-| `creation_date` | string | Account creation date |
+| `creation_date` | string | Wallet opening date |
 
 **transactions** (`transactions_*.csv`)
 
 | Column | Type | Description |
 |:---|:---|:---|
 | `tx_id` | string | Unique transaction identifier |
-| `src_id` | string | Source account |
-| `dst_id` | string | Destination account |
-| `amount` | float | Transaction amount (10 – 500 for normal, 9999 for fraud) |
-| `timestamp` | string | Transaction timestamp |
-| `description` | string | Transaction description |
+| `src_id` | string | Source wallet |
+| `dst_id` | string | Destination wallet |
+| `tx_type` | string | `cash_in`, `cash_out`, `p2p`, `merchant_payment`, `airtime`, `bill_pay`, or `bank_to_wallet` |
+| `channel` | string | `ussd`, `app`, `agent_pos`, or `api` |
+| `agent_id` | string | Facilitating agent wallet on cash legs (empty otherwise) |
+| `amount` | int | XOF amount (5 FCFA granularity); log-normal per `tx_type`, heavy-tailed — injected fraud overlaps this distribution by design |
+| `fee` | int | Sender-paid fee in XOF (banded tariff, see `schema.py`) |
+| `commission` | int | Operator-to-agent commission in XOF on cash legs |
+| `timestamp` | string | Diurnally weighted timestamp inside the simulated window (`sim_start_date` + `sim_days`) |
+| `description` | string | Drawn from a per-`tx_type` vocabulary shared by legitimate and injected rows |
 | `embedding` | string | Pipe-separated embedding vector |
+
+**sim_events** (`fraud/sim_events.csv`)
+
+| Column | Type | Description |
+|:---|:---|:---|
+| `event_id` | string | Event identifier |
+| `account_id` | string | Wallet whose SIM was swapped |
+| `msisdn` | string | Unchanged subscriber number |
+| `old_sim_id` / `new_sim_id` | string | SIM binding before / after the swap |
+| `swap_ts` | string | Swap time — minutes before the cash-out burst it enables |
 
 **fraud_cases** (`fraud/fraud_cases.csv`)
 
 | Column | Type | Description |
 |:---|:---|:---|
-| `pattern_id` | string | Pattern identifier (`pat_0`, `pat_1`, ...) |
-| `start_acc_id` | string | First account in the ring |
-| `pattern_type` | string | Always `"cycle"` |
-| `depth` | int | Number of hops in the ring (4–7) |
-| `involved_accounts` | string | Pipe-separated list of accounts |
+| `pattern_id` | string | Pattern identifier (`pat_0`, `struct_0`, `mm_0`, `tbml_0`, `hawala_0`, `simswap_0`, ...) |
+| `start_acc_id` | string | Anchor account for the pattern (meaning varies by `pattern_type`) |
+| `pattern_type` | string | One of `cycle`, `structuring`, `mobile_money_split`, `trade_based_ml`, `hawala_network`, `sim_swap_takeover`, `overdraft_mule_chain` |
+| `depth` | int | Meaning varies by `pattern_type` — see below |
+| `involved_accounts` | string | Pipe-separated list of accounts; role encoded by position — see below |
+| `window_start` / `window_end` | string | Time window of the pattern's transactions (bursts span minutes; laundering cycles span days) |
+
+`involved_accounts` positional convention and `depth` meaning, by `pattern_type`:
+- `cycle`: ordered ring `acc_0\|acc_1\|...\|acc_{depth-1}` (edges wrap: last -> first). `depth` = ring length (4–7 hops).
+- `structuring`: `coordinator\|smurf_0\|...\|smurf_{depth-1}` (`accounts[0]` = coordinator). `depth` = number of smurfs.
+- `mobile_money_split`: `agent\|customer` (`accounts[0]` = agent). `depth` = number of split transactions.
+- `trade_based_ml`: `exporter\|shell_importer\|intermediary_0\|...\|intermediary_{depth-1}\|beneficiary`. `depth` = number of layering intermediaries.
+- `hawala_network`: `sender\|hawaladar_A\|hawaladar_B\|beneficiary` (fixed length 4). `depth` = number of edges emitted (3, or 4 if the periodic reverse settlement fired).
+- `sim_swap_takeover`: `victim\|cashout_agent_0\|...\|cashout_agent_{depth-1}` (`accounts[0]` = victim). `depth` = number of cash-out agents.
+- `overdraft_mule_chain`: `collector\|mule_0\|...\|mule_{depth-1}\|agent` (`accounts[0]` = collector). `depth` = number of mule accounts. The final collector -> agent edge amount equals the sum of all mule loan amounts.
 
 ---
 

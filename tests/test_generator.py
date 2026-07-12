@@ -186,6 +186,7 @@ class TestFraudRings:
 # End-to-end generator tests
 # ---------------------------------------------------------------------------
 
+
 class TestWorkloadPlanning:
     def test_split_workload_distributes_remainder(self):
         shards = _split_workload(10, 3)
@@ -345,7 +346,7 @@ class TestStructuringGenerator:
         assert n_tx == num_patterns * fixed_smurfs
 
     def test_amounts_are_sub_threshold(self, tmp_dir):
-        """All structuring amounts must stay below the $10 000 CTR threshold."""
+        """All structuring amounts must stay below the BCEAO 5,000,000 FCFA cash payment limit."""
         emb = EmbeddingGenerator("fake", dim=32)
         gen = StructuringGenerator(num_patterns=10, smurfs_range=(3, 7))
         gen.generate(
@@ -357,7 +358,7 @@ class TestStructuringGenerator:
         with open(os.path.join(tmp_dir, "fraud", "transactions_fraud.csv")) as fh:
             reader = csv.DictReader(fh)
             amounts = [float(r["amount"]) for r in reader]
-        assert all(a < 10_000.00 for a in amounts), "Found amount >= CTR threshold"
+        assert all(a < 5_000_000.00 for a in amounts), "Found amount >= cash payment limit"
 
     def test_all_transactions_fan_into_coordinator(self, tmp_dir):
         """Every transaction in a structuring pattern must target the coordinator (fan-in star)."""
@@ -386,9 +387,9 @@ class TestStructuringGenerator:
                 if dst in coordinators:
                     src = row["src_id"]
                     # source must be a known smurf for this coordinator
-                    assert src in coordinators[dst], (
-                        f"src {src} not a registered smurf of coordinator {dst}"
-                    )
+                    assert (
+                        src in coordinators[dst]
+                    ), f"src {src} not a registered smurf of coordinator {dst}"
 
     def test_tx_ids_do_not_collide_with_start(self, tmp_dir):
         """Transaction IDs must begin at start_tx_id and never reuse prior IDs."""

@@ -67,6 +67,107 @@ def verify_fraud_patterns(
                         print(f"  FAIL: {pattern_id} — missing edge {smurf} -> {coordinator}")
                         all_valid = False
                         break
+            elif pattern_type == "mobile_money_split":
+                # Pattern: agent -> customer (multiple parallel edges)
+                # involved_accounts is "agent|customer", depth is the number of splits.
+                if len(accounts) < 2:
+                    print(
+                        f"  WARN: {pattern_id} — mobile_money_split has fewer "
+                        f"than 2 accounts, skipping"
+                    )
+                    continue
+                agent, customer = accounts[0], accounts[1]
+                if customer not in edges.get(agent, set()):
+                    print(f"  FAIL: {pattern_id} — missing edge {agent} -> {customer}")
+                    all_valid = False
+            elif pattern_type == "trade_based_ml":
+                # Pattern: exporter -> shell_importer -> intermediary_i (fan-out)
+                #          -> beneficiary (fan-in), for i in range(depth).
+                # involved_accounts = exporter|shell_importer|intermediary_0..k-1|beneficiary
+                if len(accounts) < 5:
+                    print(
+                        f"  WARN: {pattern_id} — trade_based_ml has fewer "
+                        f"than 5 accounts, skipping"
+                    )
+                    continue
+                exporter, shell_importer = accounts[0], accounts[1]
+                intermediaries = accounts[2 : 2 + depth]
+                beneficiary = accounts[-1]
+                if shell_importer not in edges.get(exporter, set()):
+                    print(f"  FAIL: {pattern_id} — missing edge {exporter} -> {shell_importer}")
+                    all_valid = False
+                    continue
+                for inter in intermediaries:
+                    if inter not in edges.get(shell_importer, set()):
+                        print(f"  FAIL: {pattern_id} — missing edge {shell_importer} -> {inter}")
+                        all_valid = False
+                        break
+                    if beneficiary not in edges.get(inter, set()):
+                        print(f"  FAIL: {pattern_id} — missing edge {inter} -> {beneficiary}")
+                        all_valid = False
+                        break
+            elif pattern_type == "hawala_network":
+                # Pattern: sender -> hawaladar_A -> hawaladar_B -> beneficiary.
+                # involved_accounts = sender|hawaladar_A|hawaladar_B|beneficiary.
+                # The optional reverse settlement edge (depth==4) is not
+                # independently verified: the edges dict has no per-pattern
+                # isolation, so a coincidental edge between the same two
+                # hawaladars can't be distinguished from this pattern's own.
+                if len(accounts) < 4:
+                    print(
+                        f"  WARN: {pattern_id} — hawala_network has fewer "
+                        f"than 4 accounts, skipping"
+                    )
+                    continue
+                sender, hawaladar_a, hawaladar_b, beneficiary = accounts[:4]
+                if hawaladar_a not in edges.get(sender, set()):
+                    print(f"  FAIL: {pattern_id} — missing edge {sender} -> {hawaladar_a}")
+                    all_valid = False
+                    continue
+                if hawaladar_b not in edges.get(hawaladar_a, set()):
+                    print(f"  FAIL: {pattern_id} — missing edge {hawaladar_a} -> {hawaladar_b}")
+                    all_valid = False
+                    continue
+                if beneficiary not in edges.get(hawaladar_b, set()):
+                    print(f"  FAIL: {pattern_id} — missing edge {hawaladar_b} -> {beneficiary}")
+                    all_valid = False
+            elif pattern_type == "sim_swap_takeover":
+                # Pattern: victim -> cashout_agent_i (fan-out), for each cash-out agent.
+                # involved_accounts = victim|cashout_agent_0|...|cashout_agent_{depth-1}
+                if len(accounts) < 2:
+                    print(
+                        f"  WARN: {pattern_id} — sim_swap_takeover has fewer "
+                        f"than 2 accounts, skipping"
+                    )
+                    continue
+                victim = accounts[0]
+                cashout_agents = accounts[1:]
+                for agent in cashout_agents:
+                    if agent not in edges.get(victim, set()):
+                        print(f"  FAIL: {pattern_id} — missing edge {victim} -> {agent}")
+                        all_valid = False
+                        break
+            elif pattern_type == "overdraft_mule_chain":
+                # Pattern: mule_i -> collector (fan-in), collector -> agent (consolidation).
+                # involved_accounts = collector|mule_0|...|mule_{depth-1}|agent
+                if len(accounts) < 3:
+                    print(
+                        f"  WARN: {pattern_id} — overdraft_mule_chain has fewer "
+                        f"than 3 accounts, skipping"
+                    )
+                    continue
+                collector = accounts[0]
+                mules = accounts[1:-1]
+                agent = accounts[-1]
+                for mule in mules:
+                    if collector not in edges.get(mule, set()):
+                        print(f"  FAIL: {pattern_id} — missing edge {mule} -> {collector}")
+                        all_valid = False
+                        break
+                else:
+                    if agent not in edges.get(collector, set()):
+                        print(f"  FAIL: {pattern_id} — missing edge {collector} -> {agent}")
+                        all_valid = False
             else:
                 print(f"  WARN: {pattern_id} — unknown pattern_type '{pattern_type}', skipping")
 
