@@ -177,6 +177,26 @@ edge, degrees, PageRank) adds the final margin, most visibly at the strict
 0.1%-FPR operating point (76% → 84%). Slow laundering cycles stay the
 hardest typology at every rung.
 
+### Typology Gallery
+
+Each figure shows one injected pattern from the `momo-100k` preset,
+embedded in its 1-hop neighbourhood of legitimate traffic — red edges are
+the injected fraud, grey is background, node colour is the wallet role,
+and edge labels are timing offsets. Regenerate with
+[`examples/plot_typologies.py`](examples/plot_typologies.py)
+(`pip install 'gen-fraud-graph[viz]'`):
+
+| | |
+|:---:|:---:|
+| ![Money-laundering cycle](docs/images/typology_cycle.png) | ![Structuring fan-in](docs/images/typology_structuring.png) |
+| ![SIM-swap takeover burst](docs/images/typology_sim_swap.png) | ![Micro-loan mule chain](docs/images/typology_mule_chain.png) |
+
+Worth noticing: the SIM-swap figure annotates the `sim_events.csv` SIM
+re-binding 89 minutes before the burst; the mule chain's consolidated
+cash-out exits through an agent-typed wallet (orange); the laundering
+cycle's hops spread over hours while the takeover burst compresses into
+minutes — the velocity contrast the baseline ladder measures.
+
 ### Canonical Presets
 
 A preset is a dataset as code: it pins scale, master seed, worker/chunk
