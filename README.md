@@ -103,6 +103,7 @@ gen-fraud-graph --scale 1.0 --workers 24 --skip-accounts --output ./data
 | `--workers` | `1` | Number of parallel worker processes. |
 | `--batches` | `1` | Number of file chunks per worker. |
 | `--format` | `csv` | Output format: `csv` (generic) or `neptune` (AWS Neptune bulk-load). |
+| `--seed` | none | Master seed for byte-identical reproducible output (same seed + same config = same files). |
 | `--fraud-rings` | auto | Number of fraud rings. Default: auto-scaled from `--scale`. |
 | `--trade-based-ml-patterns` | auto | Number of TBML patterns. Default: auto-scaled from `--scale`. |
 | `--hawala-patterns` | auto | Number of hawala network patterns. Default: auto-scaled from `--scale`. |
@@ -154,10 +155,11 @@ python examples/baseline_xgb.py --data-dir ./data --tier graph # one tier, detai
 ```
 
 Reference ladder on a 455K-transaction dataset (50K wallets, 730 injected
-patterns, ~1% fraud edges; unseeded generation, so expect run-to-run
-variation of a few points). Metrics are on the test slice of a temporal
-split; the right-hand columns are per-typology pattern recall at a 1%-FPR
-alert threshold:
+patterns, ~1% fraud edges). Generation is seedable (`--seed`) — pin a seed
+to reproduce a dataset exactly; the table below was produced without one,
+so expect run-to-run variation of a few points. Metrics are on the test
+slice of a temporal split; the right-hand columns are per-typology pattern
+recall at a 1%-FPR alert threshold:
 
 | Tier | PR-AUC | R@1% FPR | R@0.1% FPR | Commission splits | SIM-swap | Mule chains | Cycles |
 |:---|---:|---:|---:|---:|---:|---:|---:|

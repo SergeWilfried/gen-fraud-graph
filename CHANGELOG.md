@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Reproducible generation: `Config(seed=...)` / `--seed` makes every output
+  file byte-identical across runs of the same configuration. The master
+  seed derives independent child streams for account workers, transaction
+  workers, the fraud phase, and the fake embedding vectors
 - `examples/baseline_xgb.py` — XGBoost baseline ladder that reads generated
   output directly (provenance labels, wallet/KYC joins, SIM-event join)
   and trains one model per cumulative feature tier: bank-style amounts,

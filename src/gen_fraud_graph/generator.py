@@ -74,6 +74,18 @@ DEVICE_SHARE_RATE = 0.05
 # ---------------------------------------------------------------------------
 
 
+def _derive_seed(master: int | None, stream: int, salt: int = 0) -> int | None:
+    """Derive an independent child seed from the master seed.
+
+    ``stream`` separates the generation phases (accounts, transactions,
+    fraud, and their embedders); ``salt`` separates chunks within a phase.
+    Returns ``None`` when unseeded so downstream RNGs draw fresh entropy.
+    """
+    if master is None:
+        return None
+    return (master * 1_000_003 + stream * 7_777_777 + salt) % (2**63)
+
+
 def _split_workload(total: int, num_shards: int) -> list[tuple[int, int]]:
     """Split ``total`` rows across ``num_shards`` shards without dropping rows."""
     if num_shards <= 0:
@@ -107,6 +119,7 @@ def _generate_accounts_chunk(
     fmt: str = "csv",
     sim_start_date: str = "2024-01-01",
     total_accounts: int | None = None,
+    seed: int | None = None,
 ) -> str:
     """Generate a chunk of account rows (called by ProcessPoolExecutor).
 
@@ -114,8 +127,13 @@ def _generate_accounts_chunk(
     from; it defaults to the end of this chunk so the worker stays
     self-contained when called directly.
     """
-    rng = random.Random(start_id)
-    embedder = EmbeddingGenerator(provider, dim=dim)  # type: ignore[arg-type]
+    chunk_seed = _derive_seed(seed, stream=0, salt=start_id)
+    rng = random.Random(start_id if chunk_seed is None else chunk_seed)
+    embedder = EmbeddingGenerator(
+        provider,  # type: ignore[arg-type]
+        dim=dim,
+        seed=_derive_seed(seed, stream=1, salt=start_id),
+    )
     sim_start = parse_date(sim_start_date)
     pool_size = total_accounts if total_accounts is not None else max(start_id + count, 1)
 
@@ -228,10 +246,16 @@ def _generate_transactions_chunk(
     fmt: str = "csv",
     sim_start_date: str = "2024-01-01",
     sim_days: int = 90,
+    seed: int | None = None,
 ) -> str:
     """Generate a chunk of transaction rows (called by ProcessPoolExecutor)."""
-    rng = random.Random(start_tx_id)
-    embedder = EmbeddingGenerator(provider, dim=dim)  # type: ignore[arg-type]
+    chunk_seed = _derive_seed(seed, stream=2, salt=start_tx_id)
+    rng = random.Random(start_tx_id if chunk_seed is None else chunk_seed)
+    embedder = EmbeddingGenerator(
+        provider,  # type: ignore[arg-type]
+        dim=dim,
+        seed=_derive_seed(seed, stream=3, salt=start_tx_id),
+    )
     sim_start = parse_date(sim_start_date)
 
     tx_dir = os.path.join(output_dir, "transactions")
@@ -430,6 +454,7 @@ class FraudGraphGenerator:
                             cfg.output_format,
                             cfg.sim_start_date,
                             cfg.num_accounts,
+                            cfg.seed,
                         )
                     )
             for f in tqdm(futures, total=len(futures), desc="Account batches"):
@@ -461,6 +486,7 @@ class FraudGraphGenerator:
                             cfg.output_format,
                             cfg.sim_start_date,
                             cfg.sim_days,
+                            cfg.seed,
                         )
                     )
             for f in tqdm(futures, total=len(futures), desc="Transaction batches"):
@@ -470,7 +496,13 @@ class FraudGraphGenerator:
         cfg = self.cfg
         print("\n[Phase 3] Generating fraud patterns...")
 
-        embedder = EmbeddingGenerator(cfg.embedding_provider, dim=cfg.embedding_dim)
+        embedder = EmbeddingGenerator(
+            cfg.embedding_provider,
+            dim=cfg.embedding_dim,
+            seed=_derive_seed(cfg.seed, stream=4),
+        )
+        fraud_seed = _derive_seed(cfg.seed, stream=5)
+        fraud_rng = random.Random(fraud_seed) if fraud_seed is not None else None
 
         # --- cyclic money-laundering rings ---
         assert cfg.num_fraud_rings is not None
@@ -487,6 +519,7 @@ class FraudGraphGenerator:
             output_dir=cfg.output_dir,
             fmt=cfg.output_format,
             compress=cfg.compress,
+            rng=fraud_rng,
         )
         print(f"  Injected {n_ring_tx:,} ring transactions across {cfg.num_fraud_rings:,} rings")
 
@@ -506,6 +539,7 @@ class FraudGraphGenerator:
             output_dir=cfg.output_dir,
             fmt=cfg.output_format,
             compress=cfg.compress,
+            rng=fraud_rng,
         )
         print(
             f"  Injected {n_struct_tx:,} structuring transactions "
@@ -527,6 +561,7 @@ class FraudGraphGenerator:
             output_dir=cfg.output_dir,
             fmt=cfg.output_format,
             compress=cfg.compress,
+            rng=fraud_rng,
         )
         print(
             f"  Injected {n_mm_tx:,} mobile money transactions "
@@ -549,6 +584,7 @@ class FraudGraphGenerator:
             output_dir=cfg.output_dir,
             fmt=cfg.output_format,
             compress=cfg.compress,
+            rng=fraud_rng,
         )
         print(
             f"  Injected {n_tbml_tx:,} TBML transactions "
@@ -571,6 +607,7 @@ class FraudGraphGenerator:
             output_dir=cfg.output_dir,
             fmt=cfg.output_format,
             compress=cfg.compress,
+            rng=fraud_rng,
         )
         print(
             f"  Injected {n_hawala_tx:,} hawala transactions "
@@ -593,6 +630,7 @@ class FraudGraphGenerator:
             output_dir=cfg.output_dir,
             fmt=cfg.output_format,
             compress=cfg.compress,
+            rng=fraud_rng,
         )
         print(
             f"  Injected {n_simswap_tx:,} SIM-swap transactions "
@@ -615,6 +653,7 @@ class FraudGraphGenerator:
             output_dir=cfg.output_dir,
             fmt=cfg.output_format,
             compress=cfg.compress,
+            rng=fraud_rng,
         )
         print(
             f"  Injected {n_mule_tx:,} overdraft mule transactions "

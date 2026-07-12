@@ -47,6 +47,7 @@ def _tx_row(
     ts_str: str,
     fmt: str,
     agent_id: str = "",
+    rng: random.Random | None = None,
 ) -> tuple[list, str]:
     """Build one edge row (and its embedding text) in the shared schema.
 
@@ -54,14 +55,15 @@ def _tx_row(
     and fee/commission schedule of legitimate traffic — a fraud-only
     wording pool or tariff would leak the label through a single column.
     """
-    desc = description_for(_RNG, tx_type)
+    rng = rng if rng is not None else _RNG
+    desc = description_for(rng, tx_type)
     row: list = [f"tx_{tx_id}", src, dst]
     if fmt == "neptune":
         row.append("TRANSFER")
     row.extend(
         [
             tx_type,
-            channel_for(_RNG, tx_type),
+            channel_for(rng, tx_type),
             agent_id,
             amount,
             fee_for(tx_type, amount),
@@ -117,6 +119,7 @@ class FraudRingGenerator:
         output_dir: str,
         fmt: str = "csv",
         compress: bool = False,
+        rng: random.Random | None = None,
     ) -> tuple[int, int]:
         """Generate fraud rings and write output files.
 
@@ -127,6 +130,7 @@ class FraudRingGenerator:
 
         from tqdm import tqdm
 
+        rng = rng if rng is not None else _RNG
         fraud_dir = os.path.join(output_dir, "fraud")
         os.makedirs(fraud_dir, exist_ok=True)
 
@@ -142,7 +146,7 @@ class FraudRingGenerator:
         # merge two rings into a single non-cycle component and make the
         # per-ring involved_accounts labels ambiguous.
         min_d, max_d = self.depth_range
-        depths = [random.randint(min_d, max_d) for _ in range(self.num_rings)]
+        depths = [rng.randint(min_d, max_d) for _ in range(self.num_rings)]
         total_needed = sum(depths)
         if total_needed > max_account_id:
             raise ValueError(
@@ -150,7 +154,7 @@ class FraudRingGenerator:
                 f"accounts but only {max_account_id} exist; lower the ring "
                 f"count or raise the account scale"
             )
-        account_pool = random.sample(range(max_account_id), total_needed)
+        account_pool = rng.sample(range(max_account_id), total_needed)
         pool_offset = 0
 
         for pattern_id in tqdm(range(self.num_rings), desc="Generating fraud rings"):
@@ -164,25 +168,27 @@ class FraudRingGenerator:
             batch_texts: list[str] = []
             batch_rows: list[list] = []
 
-            window_days = random.randint(2, 14)
-            start_day = random.randint(0, max(0, self.sim_days - window_days - 1))
-            ts = random_timestamp(_RNG, sim_start + timedelta(days=start_day), 1)
+            window_days = rng.randint(2, 14)
+            start_day = rng.randint(0, max(0, self.sim_days - window_days - 1))
+            ts = random_timestamp(rng, sim_start + timedelta(days=start_day), 1)
             window_start = ts
             hop_gap_cap = max(3_600, window_days * 86_400 // depth)
-            amount = sample_lognormal_xof(_RNG, self.amount_median, self.amount_sigma, lo=50_000)
+            amount = sample_lognormal_xof(rng, self.amount_median, self.amount_sigma, lo=50_000)
 
             for k in range(depth):
                 src = accounts[k]
                 dst = accounts[(k + 1) % depth]
-                row, desc = _tx_row(current_tx_id, src, dst, "p2p", amount, iso_ts(ts), fmt)
+                row, desc = _tx_row(
+                    current_tx_id, src, dst, "p2p", amount, iso_ts(ts), fmt, rng=rng
+                )
                 batch_texts.append(desc)
                 batch_rows.append(row)
                 current_tx_id += 1
 
-                skim = random.uniform(*self.skim_range)
+                skim = rng.uniform(*self.skim_range)
                 amount = max(5_000, round_xof(amount * (1 - skim)))
                 if k < depth - 1:
-                    ts += timedelta(seconds=random.randint(3_600, hop_gap_cap))
+                    ts += timedelta(seconds=rng.randint(3_600, hop_gap_cap))
             window_end = ts
 
             embeddings = embedder.generate(batch_texts)
@@ -260,6 +266,7 @@ class StructuringGenerator:
         output_dir: str,
         fmt: str = "csv",
         compress: bool = False,
+        rng: random.Random | None = None,
     ) -> tuple[int, int]:
         """Generate structuring patterns and append to fraud output files.
 
@@ -284,6 +291,7 @@ class StructuringGenerator:
 
         from tqdm import tqdm
 
+        rng = rng if rng is not None else _RNG
         fraud_dir = os.path.join(output_dir, "fraud")
         os.makedirs(fraud_dir, exist_ok=True)
 
@@ -297,7 +305,7 @@ class StructuringGenerator:
 
         for pattern_id in tqdm(range(self.num_patterns), desc="Generating structuring patterns"):
             min_s, max_s = self.smurfs_range
-            num_smurfs = random.randint(min_s, max_s)
+            num_smurfs = rng.randint(min_s, max_s)
 
             # Draw the coordinator and smurfs anywhere in the account pool.
             # Consecutive IDs would let a detector cheat on ID adjacency
@@ -307,7 +315,7 @@ class StructuringGenerator:
                 num_smurfs = max(1, max_account_id - 1)
                 needed = num_smurfs + 1
 
-            idxs = random.sample(range(max_account_id), needed)
+            idxs = rng.sample(range(max_account_id), needed)
             coordinator = f"acc_{idxs[0]}"
             smurfs = [f"acc_{idxs[1 + i]}" for i in range(num_smurfs)]
             involved = "|".join([coordinator] + smurfs)
@@ -316,15 +324,15 @@ class StructuringGenerator:
             batch_rows: list[list] = []
 
             # Deposits land over one to three days.
-            window_days = random.randint(1, 3)
-            start_day = random.randint(0, max(0, self.sim_days - window_days - 1))
+            window_days = rng.randint(1, 3)
+            start_day = rng.randint(0, max(0, self.sim_days - window_days - 1))
             base = sim_start + timedelta(days=start_day)
-            ts_list = sorted(random_timestamp(_RNG, base, window_days) for _ in smurfs)
+            ts_list = sorted(random_timestamp(rng, base, window_days) for _ in smurfs)
 
             for smurf, ts in zip(smurfs, ts_list, strict=True):
-                amount = round_xof(random.uniform(*self.amount_range))
+                amount = round_xof(rng.uniform(*self.amount_range))
                 row, desc = _tx_row(
-                    current_tx_id, smurf, coordinator, "p2p", amount, iso_ts(ts), fmt
+                    current_tx_id, smurf, coordinator, "p2p", amount, iso_ts(ts), fmt, rng=rng
                 )
                 batch_texts.append(desc)
                 batch_rows.append(row)
@@ -392,6 +400,7 @@ class MobileMoneyFraudGenerator:
         output_dir: str,
         fmt: str = "csv",
         compress: bool = False,
+        rng: random.Random | None = None,
     ) -> tuple[int, int]:
         """Generate mobile money patterns and append to fraud output files."""
         import os
@@ -404,6 +413,7 @@ class MobileMoneyFraudGenerator:
 
         sim_start = parse_date(self.sim_start_date)
 
+        rng = rng if rng is not None else _RNG
         fraud_dir = os.path.join(output_dir, "fraud")
         os.makedirs(fraud_dir, exist_ok=True)
 
@@ -418,36 +428,44 @@ class MobileMoneyFraudGenerator:
             # The splitting party is a real agent-typed wallet: commission
             # farming is only expressible when the graph carries the role
             # and the per-transaction commission.
-            agent_idx = random_agent_uid(max_account_id, _RNG)
-            customer_idx = random_customer_uid(max_account_id, _RNG)
+            agent_idx = random_agent_uid(max_account_id, rng)
+            customer_idx = random_customer_uid(max_account_id, rng)
             while customer_idx == agent_idx:
-                customer_idx = random.randrange(max_account_id)
+                customer_idx = rng.randrange(max_account_id)
 
             agent = f"acc_{agent_idx}"
             customer = f"acc_{customer_idx}"
             involved = f"{agent}|{customer}"
 
-            num_txs = random.randint(4, 10)
+            num_txs = rng.randint(4, 10)
 
             # Burst base time: random point in the simulated window, then
             # each split tx is offset by a small random increment to
             # simulate a rapid burst — essential for velocity detection.
-            base_ts = random_timestamp(_RNG, sim_start, self.sim_days)
+            base_ts = random_timestamp(rng, sim_start, self.sim_days)
 
             batch_texts: list[str] = []
             batch_rows: list[list] = []
             elapsed_seconds = 0
 
             for _ in range(num_txs):
-                amount = round_xof(random.uniform(*self.amount_range))
+                amount = round_xof(rng.uniform(*self.amount_range))
 
                 tx_ts = iso_ts(base_ts + timedelta(seconds=elapsed_seconds))
                 last_offset = elapsed_seconds
                 max_gap = max(30, self.burst_window_minutes * 60 // num_txs)
-                elapsed_seconds += random.randint(30, max_gap)
+                elapsed_seconds += rng.randint(30, max_gap)
 
                 row, desc = _tx_row(
-                    current_tx_id, agent, customer, "cash_in", amount, tx_ts, fmt, agent_id=agent
+                    current_tx_id,
+                    agent,
+                    customer,
+                    "cash_in",
+                    amount,
+                    tx_ts,
+                    fmt,
+                    agent_id=agent,
+                    rng=rng,
                 )
                 batch_texts.append(desc)
                 batch_rows.append(row)
@@ -539,6 +557,7 @@ class TradeBasedMLGenerator:
         output_dir: str,
         fmt: str = "csv",
         compress: bool = False,
+        rng: random.Random | None = None,
     ) -> tuple[int, int]:
         """Generate TBML patterns and append to fraud output files.
 
@@ -557,6 +576,7 @@ class TradeBasedMLGenerator:
         if max_account_id < 5:
             return 0, start_tx_id
 
+        rng = rng if rng is not None else _RNG
         fraud_dir = os.path.join(output_dir, "fraud")
         os.makedirs(fraud_dir, exist_ok=True)
 
@@ -570,7 +590,7 @@ class TradeBasedMLGenerator:
 
         for pattern_id in tqdm(range(self.num_patterns), desc="Generating TBML patterns"):
             min_k, max_k = self.intermediaries_range
-            k = random.randint(min_k, max_k)
+            k = rng.randint(min_k, max_k)
             needed = k + 3
             if max_account_id < needed:
                 k = max(min_k, max_account_id - 3)
@@ -578,7 +598,7 @@ class TradeBasedMLGenerator:
                 if max_account_id < needed:
                     continue
 
-            idxs = random.sample(range(max_account_id), needed)
+            idxs = rng.sample(range(max_account_id), needed)
             exporter = f"acc_{idxs[0]}"
             shell_importer = f"acc_{idxs[1]}"
             intermediaries = [f"acc_{idxs[2 + i]}" for i in range(k)]
@@ -594,22 +614,24 @@ class TradeBasedMLGenerator:
 
             # Invoice settlement then layering: hops land hours-to-days
             # apart over a multi-week window.
-            window_days = random.randint(3, 21)
-            start_day = random.randint(0, max(0, self.sim_days - window_days - 1))
-            ts = random_timestamp(_RNG, sim_start + timedelta(days=start_day), 1)
+            window_days = rng.randint(3, 21)
+            start_day = rng.randint(0, max(0, self.sim_days - window_days - 1))
+            ts = random_timestamp(rng, sim_start + timedelta(days=start_day), 1)
             window_start = ts
             hop_gap_cap = max(21_600, window_days * 86_400 // len(edges))
 
             # The invoice settlement arrives as a bank transfer; the
             # layering hops move on as wallet-to-wallet transfers.
             for edge_idx, (src, dst) in enumerate(edges):
-                amount = round_xof(random.uniform(*self.amount_range))
+                amount = round_xof(rng.uniform(*self.amount_range))
                 tx_type = "bank_to_wallet" if edge_idx == 0 else "p2p"
-                row, desc = _tx_row(current_tx_id, src, dst, tx_type, amount, iso_ts(ts), fmt)
+                row, desc = _tx_row(
+                    current_tx_id, src, dst, tx_type, amount, iso_ts(ts), fmt, rng=rng
+                )
                 batch_texts.append(desc)
                 batch_rows.append(row)
                 current_tx_id += 1
-                ts += timedelta(seconds=random.randint(21_600, hop_gap_cap))
+                ts += timedelta(seconds=rng.randint(21_600, hop_gap_cap))
             window_end = ts
 
             embeddings = embedder.generate(batch_texts)
@@ -700,6 +722,7 @@ class HawalaNetworkGenerator:
         output_dir: str,
         fmt: str = "csv",
         compress: bool = False,
+        rng: random.Random | None = None,
     ) -> tuple[int, int]:
         """Generate hawala network patterns and append to fraud output files.
 
@@ -717,6 +740,7 @@ class HawalaNetworkGenerator:
         if max_account_id < 4:
             return 0, start_tx_id
 
+        rng = rng if rng is not None else _RNG
         fraud_dir = os.path.join(output_dir, "fraud")
         os.makedirs(fraud_dir, exist_ok=True)
 
@@ -729,7 +753,7 @@ class HawalaNetworkGenerator:
         sim_start = parse_date(self.sim_start_date)
 
         for pattern_id in tqdm(range(self.num_patterns), desc="Generating hawala patterns"):
-            idxs = random.sample(range(max_account_id), 4)
+            idxs = rng.sample(range(max_account_id), 4)
             sender = f"acc_{idxs[0]}"
             hawaladar_a = f"acc_{idxs[1]}"
             hawaladar_b = f"acc_{idxs[2]}"
@@ -742,21 +766,19 @@ class HawalaNetworkGenerator:
             # Deposit at t0, payout minutes-to-hours later, bulk
             # settlement wires days later — hawala moves value fast and
             # nets debt slowly.
-            start_day = random.randint(0, max(0, self.sim_days - 9))
-            t_deposit = random_timestamp(_RNG, sim_start + timedelta(days=start_day), 1)
-            t_payout = t_deposit + timedelta(minutes=random.randint(10, 300))
-            t_settle = t_deposit + timedelta(
-                days=random.randint(1, 7), minutes=random.randint(0, 720)
-            )
+            start_day = rng.randint(0, max(0, self.sim_days - 9))
+            t_deposit = random_timestamp(rng, sim_start + timedelta(days=start_day), 1)
+            t_payout = t_deposit + timedelta(minutes=rng.randint(10, 300))
+            t_settle = t_deposit + timedelta(days=rng.randint(1, 7), minutes=rng.randint(0, 720))
 
             edges: list[tuple[str, str, tuple[int, int], datetime]] = [
                 (sender, hawaladar_a, self.transfer_amount_range, t_deposit),
                 (hawaladar_a, hawaladar_b, self.settlement_amount_range, t_settle),
                 (hawaladar_b, beneficiary, self.transfer_amount_range, t_payout),
             ]
-            if random.random() < self.settlement_probability:
-                t_settle_2 = t_settle + timedelta(minutes=random.randint(30, 2_880))
-                if random.random() < 0.5:
+            if rng.random() < self.settlement_probability:
+                t_settle_2 = t_settle + timedelta(minutes=rng.randint(30, 2_880))
+                if rng.random() < 0.5:
                     edges.append(
                         (hawaladar_b, hawaladar_a, self.settlement_amount_range, t_settle_2)
                     )
@@ -771,10 +793,12 @@ class HawalaNetworkGenerator:
             # Retail legs move like ordinary transfers; the hawaladar
             # netting wires settle bank-side.
             for src, dst, amount_range, ts in edges:
-                amount = round_xof(random.uniform(*amount_range))
+                amount = round_xof(rng.uniform(*amount_range))
                 is_settlement = amount_range == self.settlement_amount_range
                 tx_type = "bank_to_wallet" if is_settlement else "p2p"
-                row, desc = _tx_row(current_tx_id, src, dst, tx_type, amount, iso_ts(ts), fmt)
+                row, desc = _tx_row(
+                    current_tx_id, src, dst, tx_type, amount, iso_ts(ts), fmt, rng=rng
+                )
                 batch_texts.append(desc)
                 batch_rows.append(row)
                 current_tx_id += 1
@@ -873,6 +897,7 @@ class SIMSwapFraudGenerator:
         output_dir: str,
         fmt: str = "csv",
         compress: bool = False,
+        rng: random.Random | None = None,
     ) -> tuple[int, int]:
         """Generate SIM-swap takeover patterns and append to fraud output files.
 
@@ -890,6 +915,7 @@ class SIMSwapFraudGenerator:
         if max_account_id < 4:
             return 0, start_tx_id
 
+        rng = rng if rng is not None else _RNG
         fraud_dir = os.path.join(output_dir, "fraud")
         os.makedirs(fraud_dir, exist_ok=True)
 
@@ -904,7 +930,7 @@ class SIMSwapFraudGenerator:
 
         for pattern_id in tqdm(range(self.num_patterns), desc="Generating SIM-swap patterns"):
             min_n, max_n = self.num_agents_range
-            n = random.randint(min_n, max_n)
+            n = rng.randint(min_n, max_n)
             needed = n + 1
             if max_account_id < needed:
                 n = max(min_n, max_account_id - 1)
@@ -914,8 +940,8 @@ class SIMSwapFraudGenerator:
 
             # The victim is a customer wallet; the drain fans out through
             # real agent-typed wallets (cash-out always has an agent leg).
-            agent_uids = sample_agent_uids(max_account_id, n, _RNG)
-            victim_uid = random_customer_uid(max_account_id, _RNG)
+            agent_uids = sample_agent_uids(max_account_id, n, rng)
+            victim_uid = random_customer_uid(max_account_id, rng)
             if victim_uid in agent_uids:
                 taken = set(agent_uids)
                 victim_uid = next(u for u in range(max_account_id) if u not in taken)
@@ -923,9 +949,9 @@ class SIMSwapFraudGenerator:
             cashout_agents = [f"acc_{uid}" for uid in agent_uids]
             involved = "|".join([victim] + cashout_agents)
 
-            base_amount = round_xof(random.uniform(*self.amount_range))
+            base_amount = round_xof(rng.uniform(*self.amount_range))
 
-            base_ts = random_timestamp(_RNG, sim_start, self.sim_days)
+            base_ts = random_timestamp(rng, sim_start, self.sim_days)
             max_gap = max(30, self.burst_window_minutes * 60 // n)
             elapsed_seconds = 0
             last_offset = 0
@@ -934,7 +960,7 @@ class SIMSwapFraudGenerator:
             # minutes before the first cash-out. IDs are assigned after the
             # benign decoys are mixed in, so nothing in the row identifies
             # the fraudulent swaps.
-            swap_ts = base_ts - timedelta(minutes=random.randint(2, 90))
+            swap_ts = base_ts - timedelta(minutes=rng.randint(2, 90))
             event_rows.append(
                 ["", victim, msisdn_for(victim_uid), sim_id_for(victim_uid), "", iso_ts(swap_ts)]
             )
@@ -943,15 +969,23 @@ class SIMSwapFraudGenerator:
             batch_rows: list[list] = []
 
             for agent in cashout_agents:
-                jitter = random.uniform(1 - self.amount_jitter, 1 + self.amount_jitter)
+                jitter = rng.uniform(1 - self.amount_jitter, 1 + self.amount_jitter)
                 amount = round_xof(base_amount * jitter)
 
                 tx_ts = iso_ts(base_ts + timedelta(seconds=elapsed_seconds))
                 last_offset = elapsed_seconds
-                elapsed_seconds += random.randint(30, max_gap)
+                elapsed_seconds += rng.randint(30, max_gap)
 
                 row, desc = _tx_row(
-                    current_tx_id, victim, agent, "cash_out", amount, tx_ts, fmt, agent_id=agent
+                    current_tx_id,
+                    victim,
+                    agent,
+                    "cash_out",
+                    amount,
+                    tx_ts,
+                    fmt,
+                    agent_id=agent,
+                    rng=rng,
                 )
                 batch_texts.append(desc)
                 batch_rows.append(row)
@@ -985,13 +1019,13 @@ class SIMSwapFraudGenerator:
         # would label the takeovers (the tabular baseline exploited that).
         n_benign = len(event_rows) * self.benign_events_per_fraud
         for _ in range(n_benign):
-            uid = random_customer_uid(max_account_id, _RNG)
-            ts = random_timestamp(_RNG, sim_start, self.sim_days)
+            uid = random_customer_uid(max_account_id, rng)
+            ts = random_timestamp(rng, sim_start, self.sim_days)
             event_rows.append(["", f"acc_{uid}", msisdn_for(uid), sim_id_for(uid), "", iso_ts(ts)])
 
         # Shuffle fraud and benign together, then assign uniform ids and
         # replacement-SIM serials so row order and naming carry no label.
-        random.shuffle(event_rows)
+        rng.shuffle(event_rows)
         for k, ev in enumerate(event_rows):
             ev[0] = f"simev_{start_tx_id}_{k}"
             ev[4] = f"sim_r{start_tx_id}_{k:06d}"
@@ -1055,6 +1089,7 @@ class OverdraftMuleGenerator:
         output_dir: str,
         fmt: str = "csv",
         compress: bool = False,
+        rng: random.Random | None = None,
     ) -> tuple[int, int]:
         """Generate overdraft mule-chain patterns and append to fraud output files.
 
@@ -1073,6 +1108,7 @@ class OverdraftMuleGenerator:
         if max_account_id < 7:
             return 0, start_tx_id
 
+        rng = rng if rng is not None else _RNG
         fraud_dir = os.path.join(output_dir, "fraud")
         os.makedirs(fraud_dir, exist_ok=True)
 
@@ -1086,7 +1122,7 @@ class OverdraftMuleGenerator:
 
         for pattern_id in tqdm(range(self.num_patterns), desc="Generating overdraft mule patterns"):
             min_n, max_n = self.num_mules_range
-            n = random.randint(min_n, max_n)
+            n = rng.randint(min_n, max_n)
             needed = n + 2
             if max_account_id < needed:
                 n = max(min_n, max_account_id - 2)
@@ -1094,13 +1130,13 @@ class OverdraftMuleGenerator:
                 if max_account_id < needed:
                     continue
 
-            idxs = random.sample(range(max_account_id), n + 1)
+            idxs = rng.sample(range(max_account_id), n + 1)
             collector = f"acc_{idxs[0]}"
             mules = [f"acc_{idxs[1 + i]}" for i in range(n)]
             # The consolidated withdrawal runs through a real agent wallet.
-            agent_uid = random_agent_uid(max_account_id, _RNG)
+            agent_uid = random_agent_uid(max_account_id, rng)
             while agent_uid in idxs:
-                agent_uid = random.randrange(max_account_id)
+                agent_uid = rng.randrange(max_account_id)
             agent = f"acc_{agent_uid}"
             involved = "|".join([collector] + mules + [agent])
 
@@ -1109,21 +1145,23 @@ class OverdraftMuleGenerator:
 
             # Loan disbursements are forwarded over a single day; the
             # collector cashes out a few hours after the last one.
-            start_day = random.randint(0, max(0, self.sim_days - 2))
+            start_day = rng.randint(0, max(0, self.sim_days - 2))
             base = sim_start + timedelta(days=start_day)
-            ts_list = sorted(random_timestamp(_RNG, base, 1) for _ in mules)
+            ts_list = sorted(random_timestamp(rng, base, 1) for _ in mules)
 
             mule_amounts: list[int] = []
             for mule, ts in zip(mules, ts_list, strict=True):
-                amount = round_xof(random.uniform(*self.loan_amount_range))
+                amount = round_xof(rng.uniform(*self.loan_amount_range))
                 mule_amounts.append(amount)
-                row, desc = _tx_row(current_tx_id, mule, collector, "p2p", amount, iso_ts(ts), fmt)
+                row, desc = _tx_row(
+                    current_tx_id, mule, collector, "p2p", amount, iso_ts(ts), fmt, rng=rng
+                )
                 batch_texts.append(desc)
                 batch_rows.append(row)
                 current_tx_id += 1
 
             consolidation_amount = sum(mule_amounts)
-            t_cashout = ts_list[-1] + timedelta(minutes=random.randint(60, 360))
+            t_cashout = ts_list[-1] + timedelta(minutes=rng.randint(60, 360))
             row, desc = _tx_row(
                 current_tx_id,
                 collector,
@@ -1133,6 +1171,7 @@ class OverdraftMuleGenerator:
                 iso_ts(t_cashout),
                 fmt,
                 agent_id=agent,
+                rng=rng,
             )
             batch_texts.append(desc)
             batch_rows.append(row)

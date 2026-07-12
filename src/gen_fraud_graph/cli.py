@@ -98,6 +98,12 @@ def main(argv: list[str] | None = None) -> None:
         help="Number of overdraft/micro-loan mule chain patterns. Default: auto.",
     )
     parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Master seed for byte-identical reproducible output. Default: fresh entropy.",
+    )
+    parser.add_argument(
         "--compress",
         action="store_true",
         default=False,
@@ -114,6 +120,7 @@ def main(argv: list[str] | None = None) -> None:
 
     cfg = Config(
         scale_factor=args.scale,
+        seed=args.seed,
         num_fraud_rings=args.fraud_rings,
         num_mobile_money_patterns=args.mobile_money_patterns,
         num_trade_based_ml_patterns=args.trade_based_ml_patterns,

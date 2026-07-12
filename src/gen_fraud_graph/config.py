@@ -18,6 +18,11 @@ class Config:
             (``YYYY-MM-DD``).  Every transaction timestamp — legitimate or
             injected — falls inside this window.
         sim_days: Length of the simulated activity window in days.
+        seed: Master seed for reproducible generation. With the same seed
+            and the same configuration (including ``workers`` and
+            ``batches_per_worker``, which define the chunk layout), every
+            output file is byte-identical across runs. ``None`` (the
+            default) draws fresh entropy each run.
         num_fraud_rings: Number of cyclic fraud patterns to inject.  When
             *None* it is derived automatically from *scale_factor*.
         fraud_ring_depth_range: Min/max depth (hops) of each fraud ring.
@@ -82,6 +87,7 @@ class Config:
     scale_factor: float = 1.0
     sim_start_date: str = "2024-01-01"
     sim_days: int = 90
+    seed: int | None = None
     num_fraud_rings: int | None = None
     fraud_ring_depth_range: tuple[int, int] = (4, 7)
     num_structuring_patterns: int | None = None
