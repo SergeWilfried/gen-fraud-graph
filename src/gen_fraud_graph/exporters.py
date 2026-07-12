@@ -12,37 +12,31 @@ import zipfile
 from collections.abc import Sequence
 from typing import Literal
 
+from gen_fraud_graph.schema import (
+    ACCOUNT_HEADERS,
+    TRANSACTION_HEADERS,
+    neptune_account_headers,
+    neptune_transaction_headers,
+)
+
 
 def get_headers(
     doc_type: Literal["account", "transaction"],
     fmt: Literal["csv", "neptune"],
 ) -> list[str]:
-    """Return CSV column headers for *doc_type* in the given *fmt*."""
+    """Return CSV column headers for *doc_type* in the given *fmt*.
+
+    Headers are derived from the dataclass specs in
+    :mod:`gen_fraud_graph.schema`, the single source of truth.
+    """
     if fmt == "neptune":
         if doc_type == "account":
-            return [
-                "~id",
-                "~label",
-                "customer_name:String",
-                "balance:Double",
-                "risk_score:Double",
-                "creation_date:String",
-                "embedding:vector",
-            ]
-        return [
-            "~id",
-            "~from",
-            "~to",
-            "~label",
-            "amount:Double",
-            "timestamp:String",
-            "description:String",
-        ]
+            return neptune_account_headers()
+        return neptune_transaction_headers()
 
-    # Default CSV
     if doc_type == "account":
-        return ["account_id", "customer_name", "balance", "risk_score", "creation_date"]
-    return ["tx_id", "src_id", "dst_id", "amount", "timestamp", "description", "embedding"]
+        return list(ACCOUNT_HEADERS)
+    return [*TRANSACTION_HEADERS, "embedding"]
 
 
 def write_output(

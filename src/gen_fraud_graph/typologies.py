@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 import numpy as np
@@ -15,12 +15,21 @@ from gen_fraud_graph.embeddings import EmbeddingGenerator
 from gen_fraud_graph.exporters import append_csv, get_headers, write_output
 from gen_fraud_graph.schema import (
     FRAUD_CASE_HEADERS,
-    TRANSACTION_DESCRIPTIONS,
+    SIM_EVENT_HEADERS,
+    channel_for,
+    commission_for,
+    description_for,
+    fee_for,
     iso_ts,
+    msisdn_for,
     parse_date,
+    random_agent_uid,
+    random_customer_uid,
     random_timestamp,
     round_xof,
+    sample_agent_uids,
     sample_lognormal_xof,
+    sim_id_for,
 )
 
 # Shared unseeded RNG for the typology generators (the module-level
@@ -28,9 +37,41 @@ from gen_fraud_graph.schema import (
 # explicit ``random.Random``).
 _RNG = random.Random()
 
-# NOTE: injected rows deliberately reuse TRANSACTION_DESCRIPTIONS — the same
-# vocabulary as legitimate traffic. A separate "suspicious" wording pool
-# would leak the label through the description (and embedding) column.
+
+def _tx_row(
+    tx_id: int,
+    src: str,
+    dst: str,
+    tx_type: str,
+    amount: int,
+    ts_str: str,
+    fmt: str,
+    agent_id: str = "",
+) -> tuple[list, str]:
+    """Build one edge row (and its embedding text) in the shared schema.
+
+    Injected rows reuse the per-type description vocabulary, channel mix,
+    and fee/commission schedule of legitimate traffic — a fraud-only
+    wording pool or tariff would leak the label through a single column.
+    """
+    desc = description_for(_RNG, tx_type)
+    row: list = [f"tx_{tx_id}", src, dst]
+    if fmt == "neptune":
+        row.append("TRANSFER")
+    row.extend(
+        [
+            tx_type,
+            channel_for(_RNG, tx_type),
+            agent_id,
+            amount,
+            fee_for(tx_type, amount),
+            commission_for(tx_type, amount) if agent_id else 0,
+            ts_str,
+            desc,
+        ]
+    )
+    return row, desc
+
 
 # ---------------------------------------------------------------------------
 # Fraud ring generator (cyclic money-laundering patterns)
@@ -67,7 +108,6 @@ class FraudRingGenerator:
     skim_range: tuple[float, float] = (0.01, 0.05)
     sim_start_date: str = "2024-01-01"
     sim_days: int = 90
-    _descriptions: list[str] = field(default_factory=lambda: TRANSACTION_DESCRIPTIONS)
 
     def generate(
         self,
@@ -134,13 +174,8 @@ class FraudRingGenerator:
             for k in range(depth):
                 src = accounts[k]
                 dst = accounts[(k + 1) % depth]
-                desc = random.choice(self._descriptions)
+                row, desc = _tx_row(current_tx_id, src, dst, "p2p", amount, iso_ts(ts), fmt)
                 batch_texts.append(desc)
-
-                row: list = [f"tx_{current_tx_id}", src, dst]
-                if fmt == "neptune":
-                    row.append("TRANSFER")
-                row.extend([amount, iso_ts(ts), desc])
                 batch_rows.append(row)
                 current_tx_id += 1
 
@@ -216,7 +251,6 @@ class StructuringGenerator:
     amount_range: tuple[int, int] = (4_000_000, 4_950_000)
     sim_start_date: str = "2024-01-01"
     sim_days: int = 90
-    _descriptions: list[str] = field(default_factory=lambda: TRANSACTION_DESCRIPTIONS)
 
     def generate(
         self,
@@ -289,13 +323,10 @@ class StructuringGenerator:
 
             for smurf, ts in zip(smurfs, ts_list, strict=True):
                 amount = round_xof(random.uniform(*self.amount_range))
-                desc = random.choice(self._descriptions)
+                row, desc = _tx_row(
+                    current_tx_id, smurf, coordinator, "p2p", amount, iso_ts(ts), fmt
+                )
                 batch_texts.append(desc)
-
-                row: list = [f"tx_{current_tx_id}", smurf, coordinator]
-                if fmt == "neptune":
-                    row.append("TRANSFER")
-                row.extend([amount, iso_ts(ts), desc])
                 batch_rows.append(row)
                 current_tx_id += 1
 
@@ -352,7 +383,6 @@ class MobileMoneyFraudGenerator:
     burst_window_minutes: int = 10  # max minutes between split transactions in a burst
     sim_start_date: str = "2024-01-01"
     sim_days: int = 90
-    _descriptions: list[str] = field(default_factory=lambda: TRANSACTION_DESCRIPTIONS)
 
     def generate(
         self,
@@ -385,7 +415,13 @@ class MobileMoneyFraudGenerator:
         current_tx_id = start_tx_id
 
         for pattern_id in tqdm(range(self.num_patterns), desc="Generating mobile money fraud"):
-            agent_idx, customer_idx = random.sample(range(max_account_id), 2)
+            # The splitting party is a real agent-typed wallet: commission
+            # farming is only expressible when the graph carries the role
+            # and the per-transaction commission.
+            agent_idx = random_agent_uid(max_account_id, _RNG)
+            customer_idx = random_customer_uid(max_account_id, _RNG)
+            while customer_idx == agent_idx:
+                customer_idx = random.randrange(max_account_id)
 
             agent = f"acc_{agent_idx}"
             customer = f"acc_{customer_idx}"
@@ -404,18 +440,16 @@ class MobileMoneyFraudGenerator:
 
             for _ in range(num_txs):
                 amount = round_xof(random.uniform(*self.amount_range))
-                desc = random.choice(self._descriptions)
-                batch_texts.append(desc)
 
                 tx_ts = iso_ts(base_ts + timedelta(seconds=elapsed_seconds))
                 last_offset = elapsed_seconds
                 max_gap = max(30, self.burst_window_minutes * 60 // num_txs)
                 elapsed_seconds += random.randint(30, max_gap)
 
-                row: list = [f"tx_{current_tx_id}", agent, customer]
-                if fmt == "neptune":
-                    row.append("TRANSFER")
-                row.extend([amount, tx_ts, desc])
+                row, desc = _tx_row(
+                    current_tx_id, agent, customer, "cash_in", amount, tx_ts, fmt, agent_id=agent
+                )
+                batch_texts.append(desc)
                 batch_rows.append(row)
                 current_tx_id += 1
 
@@ -496,7 +530,6 @@ class TradeBasedMLGenerator:
     amount_range: tuple[int, int] = (2_000_000, 15_000_000)
     sim_start_date: str = "2024-01-01"
     sim_days: int = 90
-    _descriptions: list[str] = field(default_factory=lambda: TRANSACTION_DESCRIPTIONS)
 
     def generate(
         self,
@@ -567,15 +600,13 @@ class TradeBasedMLGenerator:
             window_start = ts
             hop_gap_cap = max(21_600, window_days * 86_400 // len(edges))
 
-            for src, dst in edges:
+            # The invoice settlement arrives as a bank transfer; the
+            # layering hops move on as wallet-to-wallet transfers.
+            for edge_idx, (src, dst) in enumerate(edges):
                 amount = round_xof(random.uniform(*self.amount_range))
-                desc = random.choice(self._descriptions)
+                tx_type = "bank_to_wallet" if edge_idx == 0 else "p2p"
+                row, desc = _tx_row(current_tx_id, src, dst, tx_type, amount, iso_ts(ts), fmt)
                 batch_texts.append(desc)
-
-                row: list = [f"tx_{current_tx_id}", src, dst]
-                if fmt == "neptune":
-                    row.append("TRANSFER")
-                row.extend([amount, iso_ts(ts), desc])
                 batch_rows.append(row)
                 current_tx_id += 1
                 ts += timedelta(seconds=random.randint(21_600, hop_gap_cap))
@@ -660,7 +691,6 @@ class HawalaNetworkGenerator:
     settlement_probability: float = 0.3
     sim_start_date: str = "2024-01-01"
     sim_days: int = 90
-    _descriptions: list[str] = field(default_factory=lambda: TRANSACTION_DESCRIPTIONS)
 
     def generate(
         self,
@@ -738,15 +768,14 @@ class HawalaNetworkGenerator:
             window_start = min(ts for _, _, _, ts in edges)
             window_end = max(ts for _, _, _, ts in edges)
 
+            # Retail legs move like ordinary transfers; the hawaladar
+            # netting wires settle bank-side.
             for src, dst, amount_range, ts in edges:
                 amount = round_xof(random.uniform(*amount_range))
-                desc = random.choice(self._descriptions)
+                is_settlement = amount_range == self.settlement_amount_range
+                tx_type = "bank_to_wallet" if is_settlement else "p2p"
+                row, desc = _tx_row(current_tx_id, src, dst, tx_type, amount, iso_ts(ts), fmt)
                 batch_texts.append(desc)
-
-                row: list = [f"tx_{current_tx_id}", src, dst]
-                if fmt == "neptune":
-                    row.append("TRANSFER")
-                row.extend([amount, iso_ts(ts), desc])
                 batch_rows.append(row)
                 current_tx_id += 1
 
@@ -831,7 +860,6 @@ class SIMSwapFraudGenerator:
     burst_window_minutes: int = 10
     sim_start_date: str = "2024-01-01"
     sim_days: int = 90
-    _descriptions: list[str] = field(default_factory=lambda: TRANSACTION_DESCRIPTIONS)
 
     def generate(
         self,
@@ -866,6 +894,7 @@ class SIMSwapFraudGenerator:
 
         tx_rows: list[list] = []
         case_rows: list[list] = []
+        event_rows: list[list] = []
         current_tx_id = start_tx_id
         sim_start = parse_date(self.sim_start_date)
 
@@ -879,9 +908,15 @@ class SIMSwapFraudGenerator:
                 if max_account_id < needed:
                     continue
 
-            idxs = random.sample(range(max_account_id), needed)
-            victim = f"acc_{idxs[0]}"
-            cashout_agents = [f"acc_{idxs[1 + i]}" for i in range(n)]
+            # The victim is a customer wallet; the drain fans out through
+            # real agent-typed wallets (cash-out always has an agent leg).
+            agent_uids = sample_agent_uids(max_account_id, n, _RNG)
+            victim_uid = random_customer_uid(max_account_id, _RNG)
+            if victim_uid in agent_uids:
+                taken = set(agent_uids)
+                victim_uid = next(u for u in range(max_account_id) if u not in taken)
+            victim = f"acc_{victim_uid}"
+            cashout_agents = [f"acc_{uid}" for uid in agent_uids]
             involved = "|".join([victim] + cashout_agents)
 
             base_amount = round_xof(random.uniform(*self.amount_range))
@@ -891,23 +926,36 @@ class SIMSwapFraudGenerator:
             elapsed_seconds = 0
             last_offset = 0
 
+            # The takeover event itself: same msisdn and wallet, new SIM,
+            # minutes before the first cash-out.
+            swap_ts = base_ts - timedelta(minutes=random.randint(2, 90))
+            new_sim = f"sim_swapped_{start_tx_id}_{pattern_id}"
+            event_rows.append(
+                [
+                    f"simswap_ev_{start_tx_id}_{pattern_id}",
+                    victim,
+                    msisdn_for(victim_uid),
+                    sim_id_for(victim_uid),
+                    new_sim,
+                    iso_ts(swap_ts),
+                ]
+            )
+
             batch_texts: list[str] = []
             batch_rows: list[list] = []
 
             for agent in cashout_agents:
                 jitter = random.uniform(1 - self.amount_jitter, 1 + self.amount_jitter)
                 amount = round_xof(base_amount * jitter)
-                desc = random.choice(self._descriptions)
-                batch_texts.append(desc)
 
                 tx_ts = iso_ts(base_ts + timedelta(seconds=elapsed_seconds))
                 last_offset = elapsed_seconds
                 elapsed_seconds += random.randint(30, max_gap)
 
-                row: list = [f"tx_{current_tx_id}", victim, agent]
-                if fmt == "neptune":
-                    row.append("TRANSFER")
-                row.extend([amount, tx_ts, desc])
+                row, desc = _tx_row(
+                    current_tx_id, victim, agent, "cash_out", amount, tx_ts, fmt, agent_id=agent
+                )
+                batch_texts.append(desc)
                 batch_rows.append(row)
                 current_tx_id += 1
 
@@ -938,6 +986,7 @@ class SIMSwapFraudGenerator:
         file_cases = os.path.join(fraud_dir, "fraud_cases")
         append_csv(file_tx + ".csv", headers_tx, tx_rows)
         append_csv(file_cases + ".csv", headers_cases, case_rows)
+        append_csv(os.path.join(fraud_dir, "sim_events.csv"), SIM_EVENT_HEADERS, event_rows)
 
         return len(tx_rows), current_tx_id
 
@@ -983,7 +1032,6 @@ class OverdraftMuleGenerator:
     loan_amount_range: tuple[int, int] = (25_000, 150_000)
     sim_start_date: str = "2024-01-01"
     sim_days: int = 90
-    _descriptions: list[str] = field(default_factory=lambda: TRANSACTION_DESCRIPTIONS)
 
     def generate(
         self,
@@ -1032,10 +1080,14 @@ class OverdraftMuleGenerator:
                 if max_account_id < needed:
                     continue
 
-            idxs = random.sample(range(max_account_id), needed)
+            idxs = random.sample(range(max_account_id), n + 1)
             collector = f"acc_{idxs[0]}"
             mules = [f"acc_{idxs[1 + i]}" for i in range(n)]
-            agent = f"acc_{idxs[-1]}"
+            # The consolidated withdrawal runs through a real agent wallet.
+            agent_uid = random_agent_uid(max_account_id, _RNG)
+            while agent_uid in idxs:
+                agent_uid = random.randrange(max_account_id)
+            agent = f"acc_{agent_uid}"
             involved = "|".join([collector] + mules + [agent])
 
             batch_texts: list[str] = []
@@ -1051,24 +1103,24 @@ class OverdraftMuleGenerator:
             for mule, ts in zip(mules, ts_list, strict=True):
                 amount = round_xof(random.uniform(*self.loan_amount_range))
                 mule_amounts.append(amount)
-                desc = random.choice(self._descriptions)
+                row, desc = _tx_row(current_tx_id, mule, collector, "p2p", amount, iso_ts(ts), fmt)
                 batch_texts.append(desc)
-
-                row: list = [f"tx_{current_tx_id}", mule, collector]
-                if fmt == "neptune":
-                    row.append("TRANSFER")
-                row.extend([amount, iso_ts(ts), desc])
                 batch_rows.append(row)
                 current_tx_id += 1
 
             consolidation_amount = sum(mule_amounts)
             t_cashout = ts_list[-1] + timedelta(minutes=random.randint(60, 360))
-            desc = random.choice(self._descriptions)
+            row, desc = _tx_row(
+                current_tx_id,
+                collector,
+                agent,
+                "cash_out",
+                consolidation_amount,
+                iso_ts(t_cashout),
+                fmt,
+                agent_id=agent,
+            )
             batch_texts.append(desc)
-            row = [f"tx_{current_tx_id}", collector, agent]
-            if fmt == "neptune":
-                row.append("TRANSFER")
-            row.extend([consolidation_amount, iso_ts(t_cashout), desc])
             batch_rows.append(row)
             current_tx_id += 1
 

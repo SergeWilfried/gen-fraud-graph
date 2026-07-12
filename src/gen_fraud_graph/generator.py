@@ -18,11 +18,26 @@ from gen_fraud_graph.config import Config
 from gen_fraud_graph.embeddings import EmbeddingGenerator
 from gen_fraud_graph.exporters import get_headers
 from gen_fraud_graph.schema import (
-    TRANSACTION_DESCRIPTIONS,
+    ZONE_WEIGHTS,
+    ZONES,
+    account_type_for,
+    channel_for,
+    commission_for,
+    description_for,
+    fee_for,
     iso_ts,
+    kyc_tier_for,
+    msisdn_for,
     parse_date,
+    random_agent_uid,
+    random_aggregator_uid,
+    random_customer_uid,
+    random_merchant_uid,
     random_timestamp,
+    sample_amount,
     sample_lognormal_xof,
+    sample_tx_type,
+    sim_id_for,
 )
 from gen_fraud_graph.typologies import (
     FraudRingGenerator,
@@ -34,15 +49,24 @@ from gen_fraud_graph.typologies import (
     TradeBasedMLGenerator,
 )
 
-# Marginal shape of legitimate transaction amounts (XOF). The heavy
-# log-normal tail matters: it is what fraud typology amount ranges overlap
-# with, so no amount band is fraud-only.
-TX_AMOUNT_MEDIAN = 12_000
-TX_AMOUNT_SIGMA = 1.4
+# Wallet balance shape (median XOF, log-normal sigma) by account type.
+BALANCE_PARAMS: dict[str, tuple[int, float]] = {
+    "customer": (15_000, 1.3),
+    "merchant": (150_000, 1.2),
+    "agent": (100_000, 1.0),
+    "super_agent": (500_000, 1.0),
+    "aggregator": (1_000_000, 1.0),
+}
 
-# Legitimate account balances (XOF).
-BALANCE_MEDIAN = 50_000
-BALANCE_SIGMA = 1.5
+# Agent-side e-float (median XOF, sigma); zero for everyone else.
+FLOAT_PARAMS: dict[str, tuple[int, float]] = {
+    "agent": (750_000, 1.0),
+    "super_agent": (5_000_000, 0.8),
+}
+
+# Fraction of wallets that share a device with the neighbouring account
+# (family phones); mule farms exaggerate this pattern.
+DEVICE_SHARE_RATE = 0.05
 
 
 # ---------------------------------------------------------------------------
@@ -82,11 +106,18 @@ def _generate_accounts_chunk(
     output_dir: str,
     fmt: str = "csv",
     sim_start_date: str = "2024-01-01",
+    total_accounts: int | None = None,
 ) -> str:
-    """Generate a chunk of account rows (called by ProcessPoolExecutor)."""
+    """Generate a chunk of account rows (called by ProcessPoolExecutor).
+
+    ``total_accounts`` bounds the pool that registration agents are drawn
+    from; it defaults to the end of this chunk so the worker stays
+    self-contained when called directly.
+    """
     rng = random.Random(start_id)
     embedder = EmbeddingGenerator(provider, dim=dim)  # type: ignore[arg-type]
     sim_start = parse_date(sim_start_date)
+    pool_size = total_accounts if total_accounts is not None else max(start_id + count, 1)
 
     acc_dir = os.path.join(output_dir, "accounts")
     os.makedirs(acc_dir, exist_ok=True)
@@ -121,13 +152,45 @@ def _generate_accounts_chunk(
                 name = f"Customer_{uid}"
                 batch_texts.append(name)
 
+                acc_type = account_type_for(uid)
+
+                # Customers and merchants are onboarded by an agent;
+                # agent-side wallets are provisioned by the operator.
+                if acc_type in ("customer", "merchant") and pool_size > 2:
+                    reg_agent_uid = random_agent_uid(pool_size, rng)
+                    reg_agent = f"acc_{reg_agent_uid}" if reg_agent_uid != uid else ""
+                else:
+                    reg_agent = ""
+
+                # A small share of wallets sit on a shared household device.
+                if uid > 0 and rng.random() < DEVICE_SHARE_RATE:
+                    device = f"dev_{uid - 1:08d}"
+                else:
+                    device = f"dev_{uid:08d}"
+
+                bal_median, bal_sigma = BALANCE_PARAMS[acc_type]
+                float_params = FLOAT_PARAMS.get(acc_type)
+                float_balance = (
+                    sample_lognormal_xof(rng, float_params[0], float_params[1], hi=100_000_000)
+                    if float_params
+                    else 0
+                )
+
                 # Accounts open over the three years leading up to the
                 # simulated activity window.
                 opened = sim_start - timedelta(days=rng.randint(1, 3 * 365))
                 row: list = [
                     aid,
+                    msisdn_for(uid),
                     name,
-                    sample_lognormal_xof(rng, BALANCE_MEDIAN, BALANCE_SIGMA, lo=0, hi=100_000_000),
+                    acc_type,
+                    kyc_tier_for(acc_type, rng),
+                    sim_id_for(uid),
+                    device,
+                    reg_agent,
+                    rng.choices(ZONES, weights=ZONE_WEIGHTS, k=1)[0],
+                    sample_lognormal_xof(rng, bal_median, bal_sigma, lo=0, hi=100_000_000),
+                    float_balance,
                     round(rng.uniform(0, 1), 4),
                     opened.strftime("%Y-%m-%d"),
                 ]
@@ -200,19 +263,55 @@ def _generate_transactions_chunk(
 
             for j in range(chunk_count):
                 tx_uid = start_tx_id + i + j
-                src = f"acc_{rng.randint(0, total_accounts - 1)}"
-                dst = f"acc_{rng.randint(0, total_accounts - 1)}"
-                while src == dst:
-                    dst = f"acc_{rng.randint(0, total_accounts - 1)}"
+                tx_type = sample_tx_type(rng)
 
-                desc = rng.choice(TRANSACTION_DESCRIPTIONS)
+                # Endpoint roles follow the transaction type: cash legs run
+                # through an agent, purchases hit merchants, airtime and
+                # bills settle with aggregators.
+                agent_id = ""
+                if tx_type == "cash_in":
+                    a = random_agent_uid(total_accounts, rng)
+                    c = random_customer_uid(total_accounts, rng)
+                    src_uid, dst_uid, agent_uid = a, c, a
+                elif tx_type == "cash_out":
+                    a = random_agent_uid(total_accounts, rng)
+                    c = random_customer_uid(total_accounts, rng)
+                    src_uid, dst_uid, agent_uid = c, a, a
+                elif tx_type == "merchant_payment":
+                    src_uid = random_customer_uid(total_accounts, rng)
+                    dst_uid = random_merchant_uid(total_accounts, rng)
+                    agent_uid = None
+                elif tx_type in ("airtime", "bill_pay"):
+                    src_uid = random_customer_uid(total_accounts, rng)
+                    dst_uid = random_aggregator_uid(total_accounts, rng)
+                    agent_uid = None
+                elif tx_type == "bank_to_wallet":
+                    src_uid = random_aggregator_uid(total_accounts, rng)
+                    dst_uid = random_customer_uid(total_accounts, rng)
+                    agent_uid = None
+                else:  # p2p
+                    src_uid = random_customer_uid(total_accounts, rng)
+                    dst_uid = random_customer_uid(total_accounts, rng)
+                    agent_uid = None
+                while src_uid == dst_uid:
+                    dst_uid = rng.randint(0, total_accounts - 1)
+                if agent_uid is not None:
+                    agent_id = f"acc_{agent_uid}"
+
+                amount = sample_amount(rng, tx_type)
+                desc = description_for(rng, tx_type)
                 batch_texts.append(desc)
 
                 row: list = [
                     f"tx_{tx_uid}",
-                    src,
-                    dst,
-                    sample_lognormal_xof(rng, TX_AMOUNT_MEDIAN, TX_AMOUNT_SIGMA),
+                    f"acc_{src_uid}",
+                    f"acc_{dst_uid}",
+                    tx_type,
+                    channel_for(rng, tx_type),
+                    agent_id,
+                    amount,
+                    fee_for(tx_type, amount),
+                    commission_for(tx_type, amount) if agent_id else 0,
                     iso_ts(random_timestamp(rng, sim_start, sim_days)),
                     desc,
                 ]
@@ -330,6 +429,7 @@ class FraudGraphGenerator:
                             cfg.output_dir,
                             cfg.output_format,
                             cfg.sim_start_date,
+                            cfg.num_accounts,
                         )
                     )
             for f in tqdm(futures, total=len(futures), desc="Account batches"):

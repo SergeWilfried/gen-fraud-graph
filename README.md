@@ -21,8 +21,8 @@
 **gen_fraud_graph** is an open-source Python tool that generates massive synthetic financial transaction graphs with injected fraud patterns and optional vector embeddings. It produces CSV datasets ready for ingestion into graph databases (TigerGraph, Neptune, Neo4j, JanusGraph) or for training graph neural networks (GNN).
 
 The generator creates three types of data:
-- **Account nodes** — synthetic customer accounts with balance, risk score, and optional embedding vectors
-- **Transaction edges** — normal financial transactions between accounts
+- **Wallet nodes** — synthetic mobile-money wallets (customer/agent/merchant hierarchy) with MSISDN, SIM and device identity, KYC tier, balances, and optional embedding vectors
+- **Transaction edges** — typed mobile-money transactions (cash-in/out, P2P, merchant, airtime, bill pay, bank-to-wallet) with channel, fees, and agent commissions
 - **Fraud typologies** — cyclic money-laundering rings, structuring/smurfing, mobile money agent-commission fraud, trade-based money laundering (TBML), hawala/informal value transfer networks, SIM-swap account takeover, and overdraft/micro-loan mule chains
 
 ### Key Features
@@ -150,33 +150,57 @@ data/
 │   ├── transactions_0_0.csv   # Transaction edges (worker 0, batch 0)
 │   └── transactions_1_0.csv   # Transaction edges (worker 1, batch 0)
 └── fraud/
-    ├── transactions_fraud.csv  # Fraud ring transaction edges
-    └── fraud_cases.csv         # Fraud ring metadata (pattern_id, accounts, depth)
+    ├── transactions_fraud.csv  # Injected fraud transaction edges (all typologies)
+    ├── fraud_cases.csv         # Ground truth (pattern type, accounts, time window)
+    └── sim_events.csv          # SIM re-binding events behind SIM-swap takeovers
 ```
 
 ### CSV Schema
 
-**accounts** (`accounts_*.csv`)
+**accounts** (`accounts_*.csv`) — mobile-money wallets
 
 | Column | Type | Description |
 |:---|:---|:---|
-| `account_id` | string | Unique account identifier (`acc_0`, `acc_1`, ...) |
+| `account_id` | string | Wallet identifier and edge join key (`acc_0`, `acc_1`, ...) |
+| `msisdn` | string | Subscriber phone number (`+2217...`), unique per wallet |
 | `customer_name` | string | Synthetic customer name |
-| `balance` | float | Account balance (100 – 100,000) |
+| `account_type` | string | `customer`, `agent`, `super_agent`, `merchant`, or `aggregator` — deterministic in the account ID (see `schema.py`) |
+| `kyc_tier` | string | `unverified`, `light`, or `full` (BCEAO-style tiers; agent-side and business wallets are always `full`) |
+| `sim_id` | string | SIM originally bound to the wallet (SIM swaps re-bind it via `sim_events.csv`) |
+| `device_id` | string | Handset identifier; a small share of wallets share a household device |
+| `registration_agent_id` | string | Agent that onboarded the wallet (empty for agent-side wallets) |
+| `zone` | string | Coarse geography (region/district), urban-weighted |
+| `balance` | int | Wallet balance in XOF (log-normal by account type) |
+| `float_balance` | int | Agent e-float in XOF; `0` for non-agent wallets |
 | `risk_score` | float | Risk score (0.0 – 1.0) |
-| `creation_date` | string | Account creation date |
+| `creation_date` | string | Wallet opening date |
 
 **transactions** (`transactions_*.csv`)
 
 | Column | Type | Description |
 |:---|:---|:---|
 | `tx_id` | string | Unique transaction identifier |
-| `src_id` | string | Source account |
-| `dst_id` | string | Destination account |
-| `amount` | float | Transaction amount (10 – 500 for normal, 9999 for fraud) |
-| `timestamp` | string | Transaction timestamp |
-| `description` | string | Transaction description |
+| `src_id` | string | Source wallet |
+| `dst_id` | string | Destination wallet |
+| `tx_type` | string | `cash_in`, `cash_out`, `p2p`, `merchant_payment`, `airtime`, `bill_pay`, or `bank_to_wallet` |
+| `channel` | string | `ussd`, `app`, `agent_pos`, or `api` |
+| `agent_id` | string | Facilitating agent wallet on cash legs (empty otherwise) |
+| `amount` | int | XOF amount (5 FCFA granularity); log-normal per `tx_type`, heavy-tailed — injected fraud overlaps this distribution by design |
+| `fee` | int | Sender-paid fee in XOF (banded tariff, see `schema.py`) |
+| `commission` | int | Operator-to-agent commission in XOF on cash legs |
+| `timestamp` | string | Diurnally weighted timestamp inside the simulated window (`sim_start_date` + `sim_days`) |
+| `description` | string | Drawn from a per-`tx_type` vocabulary shared by legitimate and injected rows |
 | `embedding` | string | Pipe-separated embedding vector |
+
+**sim_events** (`fraud/sim_events.csv`)
+
+| Column | Type | Description |
+|:---|:---|:---|
+| `event_id` | string | Event identifier |
+| `account_id` | string | Wallet whose SIM was swapped |
+| `msisdn` | string | Unchanged subscriber number |
+| `old_sim_id` / `new_sim_id` | string | SIM binding before / after the swap |
+| `swap_ts` | string | Swap time — minutes before the cash-out burst it enables |
 
 **fraud_cases** (`fraud/fraud_cases.csv`)
 
@@ -187,6 +211,7 @@ data/
 | `pattern_type` | string | One of `cycle`, `structuring`, `mobile_money_split`, `trade_based_ml`, `hawala_network`, `sim_swap_takeover`, `overdraft_mule_chain` |
 | `depth` | int | Meaning varies by `pattern_type` — see below |
 | `involved_accounts` | string | Pipe-separated list of accounts; role encoded by position — see below |
+| `window_start` / `window_end` | string | Time window of the pattern's transactions (bursts span minutes; laundering cycles span days) |
 
 `involved_accounts` positional convention and `depth` meaning, by `pattern_type`:
 - `cycle`: ordered ring `acc_0\|acc_1\|...\|acc_{depth-1}` (edges wrap: last -> first). `depth` = ring length (4–7 hops).

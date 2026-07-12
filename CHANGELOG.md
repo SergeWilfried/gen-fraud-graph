@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Mobile-money schema (`schema.py`, single source of truth for CSV specs):
+  wallet nodes carry `msisdn`, `account_type` (customer/agent/super-agent/
+  merchant/aggregator), `kyc_tier`, `sim_id`, `device_id`,
+  `registration_agent_id`, `zone`, and agent `float_balance`; transaction
+  edges carry `tx_type`, `channel`, `agent_id`, `fee`, and `commission`
+  (banded tariffs that make commission-split fraud economically real)
+- `fraud/sim_events.csv` — SIM re-binding events (same msisdn, new SIM)
+  emitted minutes before each SIM-swap cash-out burst, so the takeover is
+  expressible in the data rather than only in the ground truth
+- `fraud_cases.csv` gains `window_start`/`window_end` ground-truth columns
+- Simulated activity window (`Config.sim_start_date`, `Config.sim_days`)
+  with diurnally weighted timestamps for all traffic
+- Structuring, mobile-money split, SIM-swap, and mule typologies now bind
+  their agent-side roles to real agent-typed wallets
+
+### Changed
+- Amounts are XOF integers (5 FCFA granularity); legitimate traffic is
+  log-normal per transaction type and fraud amount defaults were revised
+  to overlap the legitimate distribution
+- Injected rows draw descriptions, channels, and tariffs from the same
+  machinery as legitimate rows
+
+### Fixed
+- Removed label leakage that made injected fraud trivially separable:
+  disjoint "suspicious" description vocabulary, class-constant timestamps,
+  fixed 12,000,000 ring amounts, and consecutive smurf account IDs
+
 ## [0.1.0] - 2026-07-06
 
 ### Added
