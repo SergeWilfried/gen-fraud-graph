@@ -9,7 +9,7 @@ If you discover a security vulnerability in this project, please report it respo
 Please use **GitHub's private vulnerability reporting** as the primary channel:
 
 1. **GitHub Private Vulnerability Reporting** (preferred): open the repository's **Security** tab → **Report a vulnerability**, or use [this link](../../security/advisories/new). This creates a private advisory visible only to you and the maintainers.
-2. **Email** (alternative): if you cannot use GitHub, email **opensource@gruposantander.com**.
+2. If you cannot use GitHub, contact [@SergeWilfried](https://github.com/SergeWilfried) to arrange a private channel.
 
 ### What to Include
 
@@ -39,8 +39,7 @@ Please use **GitHub's private vulnerability reporting** as the primary channel:
 
 This security policy applies **only** to code in this repository. It does not cover:
 
-- Santander's internal infrastructure or systems
-- Other Santander products or services
+- The upstream project, SantanderAI/gen-fraud-graph (report those upstream)
 - Third-party dependencies (report those to the respective maintainers)
 
 ## Supported Versions

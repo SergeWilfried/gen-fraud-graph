@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Santander Group
+# Original work Copyright (c) 2026 Santander Group; modifications (c) 2026 SergeWilfried
 # SPDX-License-Identifier: Apache-2.0
 
 [build-system]
@@ -13,7 +13,7 @@ readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.10"
 authors = [
-    {name = "Santander AI Lab", email = "opensource@gruposantander.com"},
+    {name = "SergeWilfried"}, {name = "Santander AI Lab (original project)"},
 ]
 keywords = [
     "machine-learning",
@@ -72,10 +72,10 @@ all = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/SantanderAI/gen-fraud-graph"
-Repository = "https://github.com/SantanderAI/gen-fraud-graph"
-Issues = "https://github.com/SantanderAI/gen-fraud-graph/issues"
-Changelog = "https://github.com/SantanderAI/gen-fraud-graph/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/SergeWilfried/gen-fraud-graph"
+Repository = "https://github.com/SergeWilfried/gen-fraud-graph"
+Issues = "https://github.com/SergeWilfried/gen-fraud-graph/issues"
+Changelog = "https://github.com/SergeWilfried/gen-fraud-graph/blob/main/CHANGELOG.md"
 
 [project.scripts]
 gen-fraud-graph = "gen_fraud_graph.cli:main"

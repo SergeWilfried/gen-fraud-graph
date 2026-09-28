@@ -1,18 +1,37 @@
-# gen_fraud_graph
+# gen_fraud_graph — mobile-money fork
 
-> Synthetic fraud graph generator for training and benchmarking graph-based fraud detection models in financial services.
+> Synthetic mobile-money fraud graph generator for training and benchmarking graph-based fraud detection models.
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![PyPI version](https://img.shields.io/pypi/v/gen-fraud-graph.svg)](https://pypi.org/project/gen-fraud-graph/)
-[![CI](https://github.com/SantanderAI/gen-fraud-graph/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/SantanderAI/gen-fraud-graph/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/SantanderAI/gen-fraud-graph/branch/main/graph/badge.svg)](https://codecov.io/gh/SantanderAI/gen-fraud-graph)
-[![CodeQL](https://github.com/SantanderAI/gen-fraud-graph/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/SantanderAI/gen-fraud-graph/actions/workflows/codeql.yml)
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/SantanderAI/gen-fraud-graph/badge)](https://scorecard.dev/viewer/?uri=github.com/SantanderAI/gen-fraud-graph)
+[![CI](https://github.com/SergeWilfried/gen-fraud-graph/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/SergeWilfried/gen-fraud-graph/actions/workflows/ci.yml)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![Conventional Commits](https://img.shields.io/badge/Conventional%20Commits-1.0.0-yellow.svg)](https://conventionalcommits.org)
-[![GitHub last commit](https://img.shields.io/github/last-commit/SantanderAI/gen-fraud-graph)](https://github.com/SantanderAI/gen-fraud-graph/commits/main)
+
+---
+
+## About this fork
+
+This is an independent fork of [SantanderAI/gen-fraud-graph](https://github.com/SantanderAI/gen-fraud-graph),
+maintained by [@SergeWilfried](https://github.com/SergeWilfried). It is **not affiliated with, endorsed by, or
+maintained by Banco Santander, S.A. or the Santander AI Lab**. The original work is Copyright (c) 2026 Santander
+Group and is used under the Apache License 2.0.
+
+The fork retargets the generator at **mobile money** (West African / WAEMU setting: XOF, BCEAO-style KYC tiers,
+agent networks) and turns it into a reproducible benchmark. Changes relative to upstream:
+
+- **Mobile-money schema** — accounts become wallets (customer / agent / super-agent / merchant / aggregator) with
+  MSISDN, SIM and device identity, KYC tier and agent e-float; transactions become typed MoMo operations with
+  channel, fee and agent commission; SIM swaps are logged in `sim_events.csv`.
+- **Five added typologies** — agent-commission splits, trade-based money laundering, hawala networks, SIM-swap
+  account takeover, and micro-loan mule chains.
+- **Label-leakage fixes** — injected fraud no longer separable by amount, description or timing artefacts.
+- **Baseline feature ladder** — `examples/baseline_xgb.py` measures how much each signal layer is worth.
+- **Reproducibility** — seeded, byte-identical generation and canonical `momo-*` presets with checksums.
+- **Typology gallery** — `examples/plot_typologies.py` renders injected patterns inside real traffic.
+
+The full list is in [NOTICE](NOTICE) and the git history.
 
 ---
 
@@ -49,11 +68,9 @@ The generator creates three types of data:
 
 ### Installation
 
-> **Note:** `gen-fraud-graph` is not yet published to PyPI, so `pip install gen-fraud-graph` will fail with `No matching distribution found`. Until the first PyPI release, install from source as shown below. The PyPI badge above is pre-provisioned for the planned release.
-
-Install from source using [uv](https://github.com/astral-sh/uv):
+This fork is not published to PyPI. Install from source using [uv](https://github.com/astral-sh/uv):
 ```bash
-git clone https://github.com/SantanderAI/gen-fraud-graph.git
+git clone https://github.com/SergeWilfried/gen-fraud-graph.git
 cd gen-fraud-graph
 uv venv && source .venv/bin/activate
 uv pip install -e '.[dev]'
@@ -71,8 +88,6 @@ If you prefer plain `pip` over `uv`, the source install works the same way:
 python -m venv .venv && source .venv/bin/activate
 pip install -e '.[dev]'
 ```
-
-Once the package is published, `pip install gen-fraud-graph` will be the recommended path.
 
 ### CLI Usage
 
@@ -116,9 +131,6 @@ gen-fraud-graph --scale 1.0 --workers 24 --skip-accounts --output ./data
 ### Python API
 
 ```python
-# Copyright (c) 2026 Santander Group
-# SPDX-License-Identifier: Apache-2.0
-
 from gen_fraud_graph import Config, FraudGraphGenerator
 
 config = Config(
@@ -150,7 +162,7 @@ the benchmark and quantify what each signal layer is worth. Run it after
 any generator change — a near-perfect bottom rung means a label leak.
 
 ```bash
-pip install 'gen-fraud-graph[baseline]'
+pip install -e '.[baseline]'
 python examples/baseline_xgb.py --data-dir ./data              # full ladder
 python examples/baseline_xgb.py --data-dir ./data --tier graph # one tier, detailed
 ```
@@ -184,7 +196,7 @@ embedded in its 1-hop neighbourhood of legitimate traffic — red edges are
 the injected fraud, grey is background, node colour is the wallet role,
 and edge labels are timing offsets. Regenerate with
 [`examples/plot_typologies.py`](examples/plot_typologies.py)
-(`pip install 'gen-fraud-graph[viz]'`):
+(`pip install -e '.[viz]'`):
 
 | | |
 |:---:|:---:|
@@ -337,21 +349,16 @@ gen_fraud_graph/
 ├── tests/
 │   └── test_generator.py # Unit and integration tests
 ├── examples/
-│   └── basic_usage.py    # Minimal Python API example
-├── .github/
-│   ├── workflows/        # CI (ci, codeql, dep-scan, license-check,
-│   │                     #     pattern-check, cla, stale, release)
-│   ├── ISSUE_TEMPLATE/   # Bug + feature templates
-│   ├── PULL_REQUEST_TEMPLATE.md
-│   ├── dependabot.yml    # Weekly Python + Actions updates
-│   └── pattern-check-allowlist.txt
+│   ├── basic_usage.py       # Minimal Python API example
+│   ├── baseline_xgb.py      # XGBoost feature-tier ladder
+│   └── plot_typologies.py   # Typology gallery renderer
+├── presets/                 # Canonical preset checksums
 ├── pyproject.toml        # Package metadata and tool config
 ├── LICENSE               # Apache 2.0
-├── NOTICE                # Apache 2.0 attribution
+├── NOTICE                # Apache 2.0 attribution + fork modifications
 ├── CONTRIBUTING.md       # Contribution guidelines
 ├── CODE_OF_CONDUCT.md    # Contributor Covenant v2.1
 ├── SECURITY.md           # Vulnerability disclosure policy
-├── CODEOWNERS            # Maintainer approvals
 └── CHANGELOG.md          # Release history
 ```
 
@@ -373,32 +380,35 @@ Optional:
 
 ## Contributing
 
-We welcome contributions from the community. Please read our [CONTRIBUTING.md](CONTRIBUTING.md) before submitting a pull request.
-
-By contributing, you agree to the terms of our Contributor License Agreement (CLA).
+Issues and pull requests are welcome on this fork. Please read [CONTRIBUTING.md](CONTRIBUTING.md) first.
+Changes that are not specific to mobile money may be better proposed upstream at
+[SantanderAI/gen-fraud-graph](https://github.com/SantanderAI/gen-fraud-graph).
 
 ---
 
 ## Security
 
-To report a security vulnerability, please follow the process described in [SECURITY.md](SECURITY.md). **Do not open a public issue for security vulnerabilities.**
+To report a security vulnerability, follow [SECURITY.md](SECURITY.md). **Do not open a public issue for security vulnerabilities.**
 
 ---
 
 ## Disclaimer
 
-This software is an open source project from the **Santander AI Lab**, provided **"as is"** under its [license](LICENSE), without warranties or conditions of any kind. It is **not an official Banco Santander product or service**, carries no commitment of production support, and does not constitute financial, legal or professional advice.
+This fork is provided **"as is"** under its [license](LICENSE), without warranties or conditions of any kind. It is
+**not an official Banco Santander product or service** and is not affiliated with or endorsed by Banco Santander,
+S.A. or the Santander AI Lab. It carries no commitment of production support and does not constitute financial,
+legal or professional advice.
 
-"Santander" and its logo are registered trademarks of **Banco Santander, S.A.** The project license does not grant any right to use them beyond factual attribution.
-
-If you believe you have found a security vulnerability, follow our [security policy](https://github.com/SantanderAI/.github/blob/main/SECURITY.md) — do not open a public issue. You are responsible for assessing the suitability of this software for your use case and for keeping your own deployments up to date.
+"Santander" is a registered trademark of **Banco Santander, S.A.** and is used here only to attribute the original
+project.
 
 ## License
 
-This project is licensed under the Apache License 2.0 — see the [LICENSE](LICENSE) file for details.
+This project is licensed under the Apache License 2.0 — see the [LICENSE](LICENSE) and [NOTICE](NOTICE) files.
 
 ```
-Copyright (c) 2026 Santander Group
+Original work Copyright (c) 2026 Santander Group
+Modifications Copyright (c) 2026 SergeWilfried
 SPDX-License-Identifier: Apache-2.0
 ```
 
@@ -406,9 +416,17 @@ SPDX-License-Identifier: Apache-2.0
 
 ## Citation
 
-If you use this tool in your research, please cite:
+If you use this fork in your research, please cite both the fork and the original project:
 
 ```bibtex
+@software{gen_fraud_graph_momo,
+  title     = {gen\_fraud\_graph (mobile-money fork)},
+  author    = {SergeWilfried},
+  year      = {2026},
+  url       = {https://github.com/SergeWilfried/gen-fraud-graph},
+  license   = {Apache-2.0}
+}
+
 @software{gen_fraud_graph,
   title     = {gen\_fraud\_graph: Synthetic Fraud Graph Generator},
   author    = {Santander AI Lab},
@@ -417,19 +435,3 @@ If you use this tool in your research, please cite:
   license   = {Apache-2.0}
 }
 ```
-
----
-
-<!-- GitHub repository metadata (for reference — configured via GitHub UI/API):
-  description: "Synthetic fraud graph generator for benchmarking graph-based fraud detection models"
-  topics: machine-learning, artificial-intelligence, fraud-detection, graph-neural-network,
-          deep-learning, synthetic-data, financial-crime, anti-money-laundering, gnn,
-          anomaly-detection, finance, python
-  visibility: public
-  license: Apache-2.0
-  custom_properties:
-    category: tool
-    track: fast
-    status: active
-    team: ai-labs
--->

@@ -1,19 +1,4 @@
-# CODEOWNERS — gen-fraud-graph
+# CODEOWNERS — gen-fraud-graph (mobile-money fork)
 # https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
-#
-# The LAST matching pattern wins. Keep broad rules at the top.
 
-# ── Default ──────────────────────────────────────────────────────────────
-# Every PR needs at least one maintainer approval.
-*                       @SantanderAI/gen-fraud-graph-maintainers @SantanderAI/core-admins
-
-# ── CI/CD + GitHub config ────────────────────────────────────────────────
-# Changes to workflows, dependabot, issue/PR templates: OSPO sign-off.
-/.github/               @SantanderAI/ospo @SantanderAI/core-admins
-
-# ── Legal & security policy ──────────────────────────────────────────────
-# These files have organization-wide implications.
-LICENSE                 @SantanderAI/ospo @SantanderAI/core-admins
-NOTICE                  @SantanderAI/ospo @SantanderAI/core-admins
-SECURITY.md             @SantanderAI/ospo @SantanderAI/core-admins
-CODEOWNERS              @SantanderAI/ospo @SantanderAI/core-admins
+*                       @SergeWilfried
