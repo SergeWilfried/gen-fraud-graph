@@ -2,7 +2,7 @@
 
 Thank you for your interest in contributing to **gen_fraud_graph**! This document provides guidelines and information for contributors.
 
-This repository is governed by the **[SantanderAI open-source governance model](https://github.com/SantanderAI/.github/blob/main/GOVERNANCE.md)** — roles, SLAs, publication gates and member-lifecycle policies that apply organization-wide.
+This repository is an independent, mobile-money-focused fork of [SantanderAI/gen-fraud-graph](https://github.com/SantanderAI/gen-fraud-graph), maintained by [@SergeWilfried](https://github.com/SergeWilfried). It is not affiliated with or governed by Santander. Changes that are not specific to mobile money may be better proposed upstream.
 
 ## Table of Contents
 
@@ -13,12 +13,12 @@ This repository is governed by the **[SantanderAI open-source governance model](
 - [Pull Request Process](#pull-request-process)
 - [Code Style](#code-style)
 - [Testing](#testing)
-- [Contributor License Agreement (CLA)](#contributor-license-agreement-cla)
+- [Licensing of Contributions](#licensing-of-contributions)
 - [Release Process](#release-process)
 
 ## Code of Conduct
 
-This project adheres to the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md). By participating, you are expected to uphold this code. Please report unacceptable behavior to **opensource@gruposantander.com**.
+This project adheres to the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md). By participating, you are expected to uphold this code. Please report unacceptable behavior privately to the maintainer, [@SergeWilfried](https://github.com/SergeWilfried).
 
 ## How to Contribute
 
@@ -41,8 +41,6 @@ This project adheres to the [Contributor Covenant Code of Conduct](CODE_OF_CONDU
 
 ## Pull Request Process
 
-### For External Contributors
-
 1. **Fork** the repository to your GitHub account.
 2. **Create a branch** from `main` with a descriptive name:
    ```bash
@@ -58,14 +56,7 @@ This project adheres to the [Contributor Covenant Code of Conduct](CODE_OF_CONDU
    docs: update export format documentation
    ```
 7. **Push** your branch and open a Pull Request against `main`.
-8. **Sign the CLA** when prompted by the CLA Assistant bot.
-9. **Wait for review** — A maintainer will review your PR within 2 weeks (SLA).
-
-### For Internal Contributors (Santander)
-
-1. **Create a branch** from `main` (no fork needed if you are a member of the org).
-2. Follow steps 3-7 above.
-3. Request review from the maintainer team in `CODEOWNERS`.
+8. **Wait for review** — the maintainer aims to review PRs within 2 weeks.
 
 ### PR Requirements
 
@@ -77,7 +68,6 @@ the PR checks panel) before merge:
 - [ ] **`pip-audit`** — Dependency vulnerability audit
 - [ ] **`Dependency license allowlist`** and **`SPDX headers`** — License compliance
 - [ ] **`Scan for internal patterns`** — No internal URLs, IPs, or corporate email addresses
-- [ ] **CLA signed** (for external contributors)
 
 Additionally:
 
@@ -97,10 +87,11 @@ Additionally:
 
 ### File Headers
 
-Every source file must include the copyright header:
+Every Python file must declare its license in the first five lines (checked by CI).
+Keep the existing copyright line on files inherited from upstream; new files use:
 
 ```python
-# Copyright (c) 2026 Santander Group
+# Copyright (c) 2026 SergeWilfried
 # SPDX-License-Identifier: Apache-2.0
 ```
 
@@ -129,11 +120,11 @@ Follow [Conventional Commits](https://www.conventionalcommits.org/):
   ```
 - Minimum code coverage target: **80%**.
 
-## Contributor License Agreement (CLA)
+## Licensing of Contributions
 
-By submitting a pull request, you agree to the terms of our Contributor License Agreement. The [CLA Assistant](https://cla-assistant.io/) bot will automatically check your PR and ask you to sign the CLA if you have not already done so.
-
-The CLA ensures that contributions can be distributed under the project's Apache 2.0 license.
+There is no separate Contributor License Agreement. As described in Section 5 of the
+[Apache License 2.0](LICENSE), any contribution you intentionally submit to this project is
+licensed under the Apache License 2.0, without additional terms or conditions.
 
 ## Release Process
 

@@ -28,7 +28,7 @@ comment markers before submitting.
 - [ ] Coverage stays at or above 80%
 - [ ] Lint/format/type pass locally (`ruff check . && black --check . && mypy src/`)
 - [ ] Documentation updated (README, CHANGELOG, docstrings) if behaviour changed
-- [ ] I have signed the CLA (the bot will prompt me if not)
+- [ ] I agree my contribution is licensed under Apache-2.0 (see CONTRIBUTING.md)
 - [ ] I agree to follow the project's [Code of Conduct](../blob/main/CODE_OF_CONDUCT.md)
 
 ## Notes for reviewers
