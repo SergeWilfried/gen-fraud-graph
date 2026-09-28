@@ -1,22 +1,22 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  SantanderAI · gen_fraud_graph
+  gen_fraud_graph (mobile-money fork)
   Social preview image (1280x640) for GitHub repository sharing.
-  Brand reference: Santander Red #EC0000 (group), white, dark red #8B0000.
-  No proprietary logo marks are reproduced; only typography.
+  Palette: deep teal #0F4C4A -> #06201F, white, amber accent #F2A93B.
+  Fork of SantanderAI/gen-fraud-graph; not affiliated with Santander.
 -->
 <svg xmlns="http://www.w3.org/2000/svg"
      viewBox="0 0 1280 640"
      width="1280" height="640"
      role="img"
-     aria-label="gen_fraud_graph — synthetic fraud-graph generator by SantanderAI">
+     aria-label="gen_fraud_graph — synthetic mobile-money fraud-graph generator">
 
   <defs>
-    <!-- Background: Santander red gradient with subtle depth -->
+    <!-- Background: deep teal gradient with subtle depth -->
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%"  stop-color="#EC0000"/>
-      <stop offset="60%" stop-color="#C40000"/>
-      <stop offset="100%" stop-color="#8B0000"/>
+      <stop offset="0%"  stop-color="#0F4C4A"/>
+      <stop offset="60%" stop-color="#0A3331"/>
+      <stop offset="100%" stop-color="#06201F"/>
     </linearGradient>
 
     <!-- Subtle white highlight in top-right -->
@@ -59,7 +59,7 @@
         letter-spacing="4"
         fill="#FFFFFF"
         fill-opacity="0.85">
-    SANTANDER AI  ·  OPEN SOURCE
+    MOBILE MONEY  ·  OPEN SOURCE
   </text>
 
   <!-- Title (monospace because it's a code project) -->
@@ -78,7 +78,7 @@
         font-weight="400"
         fill="#FFFFFF"
         fill-opacity="0.92">
-    Synthetic fraud-graph generator for benchmarking
+    Synthetic mobile-money fraud graphs for
   </text>
   <text x="80" y="335"
         font-family="'Inter','Helvetica Neue','Arial',sans-serif"
@@ -86,7 +86,7 @@
         font-weight="400"
         fill="#FFFFFF"
         fill-opacity="0.92">
-    graph-based fraud detection at scale.
+    benchmarking AML and fraud detection.
   </text>
 
   <!-- Capability chips -->
@@ -120,7 +120,7 @@
       <rect width="170" height="40" rx="20" ry="20"
             fill="#FFFFFF" fill-opacity="0.14"
             stroke="#FFFFFF" stroke-opacity="0.30" stroke-width="1.2"/>
-      <text x="85" y="26" text-anchor="middle">Synthetic Data</text>
+      <text x="85" y="26" text-anchor="middle">Mobile Money</text>
     </g>
 
     <g transform="translate(658, 410)">
@@ -261,7 +261,7 @@
       <circle cx="0" cy="-150" r="19"
               fill="#FFFFFF"
               stroke="#FFFFFF" stroke-opacity="0.40" stroke-width="6"/>
-      <circle cx="0" cy="-150" r="6" fill="#C40000"/>
+      <circle cx="0" cy="-150" r="6" fill="#F2A93B"/>
     </g>
 
     <!-- Label above the flagged node -->
@@ -292,17 +292,17 @@
         font-weight="500"
         fill="#FFFFFF"
         fill-opacity="0.90">
-    github.com/SantanderAI/gen-fraud-graph
+    github.com/SergeWilfried/gen-fraud-graph
   </text>
 
-  <!-- SantanderAI wordmark (text-only, no proprietary logo) -->
+  <!-- Market tag -->
   <text x="1200" y="595"
         text-anchor="end"
         font-family="'Inter','Helvetica Neue','Arial',sans-serif"
-        font-size="24"
+        font-size="22"
         font-weight="700"
         letter-spacing="2"
-        fill="#FFFFFF">
-    Santander<tspan font-weight="300">AI</tspan>
+        fill="#F2A93B">
+    WAEMU<tspan font-weight="300" fill="#FFFFFF">  ·  XOF</tspan>
   </text>
 </svg>

@@ -1,6 +1,21 @@
 gen_fraud_graph
 Copyright (c) 2026 Santander Group
 
+This product includes modifications by SergeWilfried
+(https://github.com/SergeWilfried/gen-fraud-graph), 2026. This repository
+is an independent fork; it is not affiliated with, endorsed by, or
+maintained by Banco Santander, S.A. or the Santander AI Lab. The original
+project is available at https://github.com/SantanderAI/gen-fraud-graph.
+
+Modifications made in this fork (see README.md, "About this fork"):
+  - Mobile-money wallet and transaction schema (XOF, BCEAO-style KYC tiers,
+    agent hierarchy, SIM/device identity, sim_events.csv)
+  - Five additional MoMo/AML fraud typologies
+  - Removal of label leakage in injected fraud
+  - XGBoost baseline feature ladder (examples/baseline_xgb.py)
+  - Seeded, byte-identical generation and canonical presets
+  - Typology gallery (examples/plot_typologies.py)
+
 This product is licensed under the Apache License, Version 2.0 (the "License");
 you may not use this product except in compliance with the License.
 A copy of the License is included in the LICENSE file at the root of this
