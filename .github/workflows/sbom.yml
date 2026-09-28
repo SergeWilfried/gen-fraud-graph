@@ -1,5 +1,5 @@
 # Generates a Software Bill of Materials for each published release, stamps
-# Santander Group as document creator, signs a build provenance attestation
+# the fork maintainer as document creator, signs a build provenance attestation
 # (Sigstore, verifiable with `gh attestation verify`) and attaches both
 # standard formats (SPDX + CycloneDX) as release assets.
 # Manual runs (workflow_dispatch) upload the SBOMs as workflow artifacts only.
@@ -41,11 +41,11 @@ jobs:
           output-file: ${{ env.BASE }}.cdx.json
           upload-artifact: false
           upload-release-assets: false
-      - name: Stamp Santander Group as document creator
+      - name: Stamp the fork maintainer as document creator
         run: |
-          jq '.creationInfo.creators += ["Organization: Santander Group"]' \
+          jq '.creationInfo.creators += ["Person: SergeWilfried"]' \
             "$BASE.spdx.json" > tmp.json && mv tmp.json "$BASE.spdx.json"
-          jq '.metadata.authors = [{"name": "Open Source Santander AI", "email": "opensource@gruposantander.com"}]' \
+          jq '.metadata.authors = [{"name": "SergeWilfried"}]' \
             "$BASE.cdx.json" > tmp.json && mv tmp.json "$BASE.cdx.json"
       - name: Attest SBOM build provenance
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373  # v4.1.1
